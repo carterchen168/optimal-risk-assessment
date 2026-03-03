@@ -1,0 +1,5 @@
+DCHWSSF - South Wing water flow rate
+DCHWSNF - North Wing water flow rate
+DCHWDP - Hot Water Pump Differential Pressure
+DCHWP1SP - Hot Water Pump Differential Speed
+DCHWP1S - Hot Water Pump Status Indicator
