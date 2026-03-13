@@ -4,6 +4,7 @@ import random
 import sys
 import importlib
 import tkinter as tk
+import pandas as pd
 from tkinter import simpledialog
 from user_input_accept import params
 
@@ -59,27 +60,36 @@ if not hasattr(params, 'valpath'):
 params.targetNameIdx = listdlg(allparams, title='Pick a target parameter to be predicted', single_selection=True)
 params.targetName = allparams[params.targetNameIdx]
 
-mat_files = [f for f in os.listdir(params.nompath) if f.endswith('.mat') and os.path.isfile(os.path.join(params.nompath, f))]
+# Look for BOTH .csv and .mat files
+valid_exts = ('.mat', '.csv')
+data_files = [f for f in os.listdir(params.nompath) if f.endswith(valid_exts) and os.path.isfile(os.path.join(params.nompath, f))]
 
-selected_file = random.choice(mat_files)
+selected_file = random.choice(data_files)
 selected_file_path = os.path.join(params.nompath, selected_file)
 
-# Change directory and set up dynamic pathing
 os.chdir(params.fcnpath)
 if params.fcnpath not in sys.path:
-    sys.path.insert(0, params.fcnpath) # Allow Python to find the functions here
+    sys.path.insert(0, params.fcnpath)
 
 header, m, message = None, None, None
 
-# Find the matching function and execute it
-for j, anomaly in enumerate(params.anomalytype):
-    if params.anomtype == anomaly:
-        func_name = params.loadfcn[j]
-        if func_name in globals():
-            header, m, message = globals()[func_name](selected_file_path)
-        else:
-            print(f"Warning: Function {func_name} not found in the global scope.")
-        break
+if selected_file_path.endswith('.csv'):
+    df = pd.read_csv(selected_file_path)
+    header = df.columns.tolist()
+    m = df.values # Converts the dataframe into a 2D numpy array
+    message = "CSV loaded successfully."
+else:
+    # Find the matching function and execute it for .mat files
+    for j, anomaly in enumerate(params.anomalytype):
+        if params.anomtype == anomaly:
+            func_name = params.loadfcn[j]
+            if func_name in globals():
+                header, m, message = globals()[func_name](selected_file_path)
+            else:
+                print(f"Warning: Function {func_name} not found in the global scope.")
+            break
+
+# add exceptions here
 
 os.chdir(params.acceptpath)
 
