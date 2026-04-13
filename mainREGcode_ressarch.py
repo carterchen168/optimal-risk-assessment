@@ -5,7 +5,7 @@ from sklearn.svm import SVR, LinearSVR
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import BaggingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge, RANSACRegressor
-from sklearn.preprocessing import PolynomialFeatures
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.neural_network import MLPRegressor
 
@@ -68,7 +68,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
                 if not hasattr(runOptions, 'modelSVR'):
                     # 'x' maps to C (regularization) or gamma. Let's map it to C.
                     c_val = x if x > 0 else 1e-4
-                    model = SVR(C=c_val, kernel='rbf')
+                    model = make_pipeline(StandardScaler(), SVR(C=c_val, kernel='rbf'))
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.svrTrainTime = time.time() - t0
@@ -83,7 +83,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             # 3. LibSVR (Linear SVR)
             elif algo_idx == 3:
                 if not hasattr(runOptions, 'modelLibSVR'):
-                    model = LinearSVR(C=x, random_state=0)
+                    model = make_pipeline(StandardScaler(), LinearSVR(C=x, random_state=0))
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.lsvmTrainTime = time.time() - t0
@@ -101,7 +101,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
                 k_val = max(1, int(round(x)))
                 k_val = min(k_val, len(tr.y))  # Cannot have more neighbors than samples
                 
-                model = KNeighborsRegressor(n_neighbors=k_val)
+                model = make_pipeline(StandardScaler(), KNeighborsRegressor(n_neighbors=k_val))
                 t0 = time.time()
                 model.fit(tr.x, tr.y)
                 output.kNNTrainTime = time.time() - t0
@@ -131,7 +131,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             elif algo_idx == 6:
                 if not hasattr(runOptions, 'modelRsumLin'):
                     # x acts as lambda (alpha in sklearn Ridge)
-                    model = Ridge(alpha=x)
+                    model = make_pipeline(StandardScaler(), Ridge(alpha=x))
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.RsumLinTrainTime = time.time() - t0
@@ -147,7 +147,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             elif algo_idx == 7:
                 if not hasattr(runOptions, 'modelQuad'):
                     # Use a pipeline to generate polynomial features, then fit Ridge
-                    model = make_pipeline(PolynomialFeatures(2), Ridge(alpha=x))
+                    model = make_pipeline(StandardScaler(), PolynomialFeatures(2), Ridge(alpha=x))
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.QuadTrainTime = time.time() - t0
@@ -164,7 +164,7 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
                 if not hasattr(runOptions, 'modelbnets'):
                     # x is number of hidden units
                     hidden_units = max(1, int(round(x)))
-                    base_nn = MLPRegressor(hidden_layer_sizes=(hidden_units,), max_iter=500)
+                    base_nn = make_pipeline(StandardScaler(), MLPRegressor(hidden_layer_sizes=(hidden_units,), max_iter=500))
                     model = BaggingRegressor(estimator=base_nn, n_estimators=10, random_state=0)
                     t0 = time.time()
                     model.fit(tr.x, tr.y)

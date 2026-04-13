@@ -171,9 +171,7 @@ def run(params: Any) -> Tuple[Any, List]:
         
         # Validation phase
         params.Ntests = len(vld.y)
-        # output_val = mainREGcode_ressarch(model_select_data.tuneval[i], tr, vld, 
-        #                                  params.algo[i], params)
-        output_tst, params = mainREGcode_ressarch(model_select_data.tuneval[i], train, test, 
+        output_val, params = mainREGcode_ressarch(model_select_data.tuneval[i], tr, vld, 
                                                  [params.algo[i]], params)
         yval_predicted = output_val.yhat
         
@@ -255,11 +253,16 @@ def run(params: Any) -> Tuple[Any, List]:
         # Detection optimization
         s = Struct(fieldinit=[])
         
-        detection_string = []
+        run_leveltune = False
         for detect in detect_list:
-            detection_string.append(detect not in detection_types)
+            if detect in detection_types:
+                # 1-based index to match MATLAB logic (SPRT is 7)
+                idx = detection_types.index(detect) + 1 
+                if idx < 7:
+                    run_leveltune = True
+                    break
         
-        if any(not d for d in detection_string):
+        if run_leveltune:
             print('Now optimizing critical threshold to match ground truth, for relevant detection techniques')
             et = time.time()
             
