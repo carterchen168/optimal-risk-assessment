@@ -1,426 +1,472 @@
-import os
-import time
-import math
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+import os
+import glob
+import pandas as pd
+import scipy.io as sio
+from typing import Dict, List, Tuple, Any
+from modelsearch import optimsearch
+from mainREGcode_ressarch import mainREGcode_ressarch
+from modelopttest import modelopttest
+from detectopt.truthdata import truthdata
 
-# External project modules — these must exist elsewhere in the codebase.
-# They are imported at call time inside run() where possible so that
-# import-order issues don't block loading this file.
+class Struct:
+    """A lightweight class to replicate MATLAB struct dot-notation behavior."""
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
-
-class Params:
-    """Lightweight attribute bag, mirrors the pattern used across the project."""
-    pass
-
-
-def _merge_params(target, source):
-    """Merge all attributes of *source* into *target*, skipping 'fieldinit'."""
-    for key in vars(source) if hasattr(source, '__dict__') else {}:
-        if key == 'fieldinit':
-            continue
-        setattr(target, key, getattr(source, key))
-    return target
-
-
-# Distributed / parallel helper
-
-def _run_parallel(func, arg_list, n_workers):
-    """Execute *func* over *arg_list* using a process pool of *n_workers*.
-
-    Returns a list of results aligned with *arg_list*.  Failed tasks
-    produce ``None`` in the corresponding slot.
+def run(params: Any) -> Tuple[Any, List]:
     """
-    results = [None] * len(arg_list)
-    with ProcessPoolExecutor(max_workers=min(n_workers, len(arg_list))) as pool:
-        future_to_idx = {
-            pool.submit(func, *args): idx
-            for idx, args in enumerate(arg_list)
-        }
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result()
-            except Exception as exc:
-                print(f"Warning: parallel task {idx} raised {exc}")
-                results[idx] = None
-    return results
-
-
-# Main entry point
-
-def run(params):
-    """Port of ``testoptloop.m``.
-
-    Parameters
-    ----------
-    params : Params
-        Configuration structure populated by the ACCEPT config pipeline.
-
-    Returns
-    -------
-    modelselectdata : Params
-        Collected regression / detection model-selection results.
-    rocarea : list
-        Per-algorithm detection ROC results.
+    Convert of MATLAB testoptloop_ressarch.m to Python.
+    Renamed to 'run' to match the call from ressarch.py.
     """
-    # Late imports of project-specific modules
-    from make_datafiles import make_datafiles
-    from mainREGcode_ressarch import mainREGcode_ressarch
-    from truthdata import truthdata
-    from leveltune import leveltune
-    from detectioncall import detectioncall
-
-    # Try optional modules — they may not be needed for every config
-    try:
-        from modelopttest import modelopttest
-    except ImportError:
-        modelopttest = None
-    try:
-        from modelsearch import modelsearch
-    except ImportError:
-        modelsearch = None
-    try:
-        from lds_timeseries import lds_timeseries
-    except ImportError:
-        lds_timeseries = None
-
-    detectiontypes = [
-        'Redline - Training',
-        'Redline - Validation',
-        'Predictive - Training',
-        'Predictive - Validation',
-        'Optimal - Training',
-        'Optimal - Validation',
-        'SPRT',
+    detection_types = [
+        'Redline - Training', 
+        'Redline - Validation', 
+        'Predictive - Training', 
+        'Predictive - Validation', 
+        'Optimal - Training', 
+        'Optimal - Validation', 
+        'SPRT'
     ]
-
+    
     params.jobrecordID = []
-
-    # Build data splits
-    tr, vld, train_cell, rawdata_val, rawdata_tr, params, Statistics, features, fullfeatures = \
-        make_datafiles(params, 2)
-
-    modelselectdata = Params()
-    modelselectdata.rawdata_tr = rawdata_tr
-    modelselectdata.Statistics = Statistics
-
+    
+    # make_datafiles calls
+    tr, vld, train_cell, rawdata_val, rawdata_tr, params, Statistics, features, fullfeatures = make_datafiles(params, 2)
+    
+    model_select_data = Struct()
+    model_select_data.rawdata_tr = rawdata_tr
+    model_select_data.Statistics = Statistics
+    
     train, test, train_cell, rawdata_tst, rawdata_tr = make_datafiles(params, 3)
-
-    trtest = Params()
+    
+    trtest = Struct()
     trtest.x = [tr.x]
     trtest.y = [tr.y]
-
-    modelselectdata.rawdata_val = rawdata_val
-    modelselectdata.rawdata_tst = rawdata_tst
+    
+    model_select_data.rawdata_val = rawdata_val
+    model_select_data.rawdata_tst = rawdata_tst
+    
     header = params.header
-
-    # Map selected detection methods to indices in detectiontypes (1-based)
+    
+    # ismember equivalent - find location of params.detect in detection_types
     loc = []
-    for d in params.detect:
-        if d in detectiontypes:
-            loc.append(detectiontypes.index(d) + 1)  # 1-based
-
-    # Pre-allocate result containers
-    n_algos = params.tune.shape[0] if hasattr(params.tune, 'shape') else len(params.tune)
-    modelselectdata.hyp_param = [None] * n_algos
-    modelselectdata.Jmse = [None] * n_algos
-    modelselectdata.localhistory = [None] * n_algos
-    modelselectdata.tuneval = np.zeros(n_algos)
-    modelselectdata.output_tr = [None] * n_algos
-    modelselectdata.obstrain = [None] * n_algos
-    modelselectdata.output_val = [None] * n_algos
-    modelselectdata.output_tst = [None] * n_algos
-    modelselectdata.obsval = [None] * n_algos
-    modelselectdata.obstest = [None] * n_algos
-    modelselectdata.params = [None] * n_algos
-    modelselectdata.ord = [None] * n_algos
-    modelselectdata.lds_params = [None] * n_algos
-
-    rocarea = [None] * n_algos
-
-    # Main loop over selected algorithms
-    for i in range(n_algos):
+    detect_list = params.detect if isinstance(params.detect, list) else [params.detect]
+    for detect in detect_list:
+        if detect in detection_types:
+            loc.append(detection_types.index(detect) + 1)  # MATLAB uses 1-based indexing
+        else:
+            loc.append(-1)
+    
+    # Main loop over tune parameters
+    for i in range(len(params.tune)):
         t_start = time.time()
-        tune_row = params.tune[i]  # [min, max, value]
-
-        # 1. Regression hyper-parameter optimisation
+        
         if params.regress.flag == 1:
             params.Ntests = len(trtest.y)
-
+            
             if params.regress.optIdx == 7:
-                # --- Grid search ---
-                algo_name = params.algo[i]
-                if algo_name in ('svr', 'libsvr', 'gp', 'lin', 'quad', 'ransac'):
-                    modelselectdata.hyp_param[i] = np.logspace(
-                        np.log10(tune_row[0]), np.log10(tune_row[1]), 100
-                    )
-                elif algo_name == 'lasso':
-                    modelselectdata.hyp_param[i] = np.linspace(
-                        tune_row[0], tune_row[1], 100
-                    )
-                elif algo_name in ('knn', 'btree', 'bnet', 'elm'):
-                    if tune_row[1] > 100:
-                        step = math.ceil(tune_row[1] / 100)
-                        modelselectdata.hyp_param[i] = np.arange(
-                            tune_row[0], tune_row[1] + 1, step
-                        )
+                # Generate hyperparameter values based on algorithm type
+                algo = params.algo[i]
+                tune_min = params.tune[i][0]
+                tune_max = params.tune[i][1]
+                
+                if not hasattr(model_select_data, 'hyp_param'):
+                    model_select_data.hyp_param = []
+                
+                if i >= len(model_select_data.hyp_param):
+                    model_select_data.hyp_param.append(None)
+                
+                if algo in ['svr', 'libsvr', 'gp', 'lin', 'quad', 'ransac']:
+                    model_select_data.hyp_param[i] = np.logspace(np.log10(tune_min), np.log10(tune_max), 100)
+                    
+                elif algo == 'lasso':
+                    model_select_data.hyp_param[i] = np.linspace(tune_min, tune_max, 100)
+                    
+                elif algo in ['knn', 'btree', 'bnet', 'elm']:
+                    if tune_max > 100:
+                        step = int(np.ceil(tune_max / 100))
+                        model_select_data.hyp_param[i] = np.arange(tune_min, tune_max + 1, step)
                     else:
-                        modelselectdata.hyp_param[i] = np.arange(
-                            tune_row[0], tune_row[1] + 1
-                        )
-
-                hp = modelselectdata.hyp_param[i]
-                jmse = np.full(len(hp), np.nan)
-
+                        model_select_data.hyp_param[i] = np.arange(tune_min, tune_max + 1)
+                
+                # Handle distributed computing
                 if params.distrib == 1:
-                    # Distributed grid search
-                    n_workers = getattr(params.regress, 'Nwork', 4)
-                    arg_list = [(hp[j], params, i, tr, trtest) for j in range(len(hp))]
-                    results = _run_parallel(modelopttest, arg_list, n_workers)
-                    for j, res in enumerate(results):
-                        jmse[j] = res if res is not None else np.nan
+                    # Distributed job submission - TODO: implement based on your job scheduler
+                    pass
                 else:
-                    # Sequential grid search
-                    for j in range(len(hp)):
-                        jmse[j] = modelopttest(hp[j], params, i, tr, trtest)
-
-                modelselectdata.Jmse[i] = jmse
-                modelselectdata.tuneval[i] = hp[int(np.nanargmin(jmse))]
+                    # Serial execution
+                    if not hasattr(model_select_data, 'Jmse'):
+                        model_select_data.Jmse = []
+                    if i >= len(model_select_data.Jmse):
+                        model_select_data.Jmse.append([])
+                    
+                    for j in range(len(model_select_data.hyp_param[i])):
+                        result = modelopttest(model_select_data.hyp_param[i][j], params, i, tr, trtest)
+                        model_select_data.Jmse[i].append(result)
+                
+                # Find optimal hyperparameter (argmin)
+                if not hasattr(model_select_data, 'tuneval'):
+                    model_select_data.tuneval = np.array([])
+                    
+                optimal_idx = np.argmin(model_select_data.Jmse[i])
+                model_select_data.tuneval = np.append(model_select_data.tuneval, 
+                                                      model_select_data.hyp_param[i][optimal_idx])
             else:
-                # --- Optimisation via modelsearch ---
-                tuneval_i, jmse_i, hist_i = modelsearch(
-                    tune_row[2], params, tr, trtest, i
-                )
-                modelselectdata.tuneval[i] = tuneval_i
-                modelselectdata.Jmse[i] = jmse_i
-                modelselectdata.localhistory[i] = hist_i
+                # modelsearch alternative
+                tune_val, jmse, local_history = modelsearch(params.tune[i][2], params, tr, trtest, i)
+                
+                if not hasattr(model_select_data, 'tuneval'):
+                    model_select_data.tuneval = np.array([])
+                model_select_data.tuneval = np.append(model_select_data.tuneval, tune_val)
+                
+                if not hasattr(model_select_data, 'Jmse'):
+                    model_select_data.Jmse = []
+                if i >= len(model_select_data.Jmse):
+                    model_select_data.Jmse.append(jmse)
+                else:
+                    model_select_data.Jmse[i] = jmse
+                    
+                if not hasattr(model_select_data, 'localhistory'):
+                    model_select_data.localhistory = []
+                if i >= len(model_select_data.localhistory):
+                    model_select_data.localhistory.append(local_history)
         else:
-            # No optimisation — use the fixed point directly
-            modelselectdata.tuneval[i] = tune_row[2]
-
-        t_elapsed = time.time() - t_start
-        print(f"Finished {params.algo[i]} regression optimization in {t_elapsed:.2f} sec")
-
-        # 2. Evaluate regression on train / val / test splits
-        et = time.process_time()
-
-        # --- Training ---
+            if not hasattr(model_select_data, 'tuneval'):
+                model_select_data.tuneval = np.array([])
+            model_select_data.tuneval = np.append(model_select_data.tuneval, params.tune[i][2])
+        
+        t_end = time.time() - t_start
+        print(f"Finished {params.algo[i]} regression optimization in {t_end:.2f} sec")
+        
+        # Training phase
+        et = time.time()
         params.Ntests = len(train_cell.y)
-        output_tr = mainREGcode_ressarch(
-            modelselectdata.tuneval[i], tr, train_cell, [params.algo[i]], params
-        )
-        modelselectdata.output_tr[i] = output_tr
-
-        obstrain = []
-        obstr_data = []
-        for k in range(params.Ntests):
-            residual = (np.asarray(train_cell.y[k]) - np.asarray(output_tr.yhat[k])).T
-            obstr_data.append(residual)
-            obs_k = Params()
-            obs_k.data = residual
-            obstrain.append(obs_k)
-        modelselectdata.obstrain[i] = obstrain
-
-        obstr = Params()
-        obstr.data = obstr_data
-
-        # --- Validation ---
-        params.Ntests = len(vld.y)
-        output_val = mainREGcode_ressarch(
-            modelselectdata.tuneval[i], tr, vld, [params.algo[i]], params
-        )
-        yvalPredicted = output_val.yhat
-
-        # Change directory context (mirrors the MATLAB cd calls)
-        if hasattr(params, 's2flightpath'):
-            target = os.path.dirname(params.s2flightpath)
+        # output_tr = mainREGcode_ressarch(model_select_data.tuneval[i], tr, train_cell, 
+        #                                  params.algo[i], params)
+        output_tr, params = mainREGcode_ressarch(model_select_data.tuneval[i], tr, train_cell, 
+                                                [params.algo[i]], params)
+                                         
+        if not hasattr(model_select_data, 'output_tr'):
+            model_select_data.output_tr = []
+        if i >= len(model_select_data.output_tr):
+            model_select_data.output_tr.append(output_tr)
         else:
-            target = getattr(params, 'fcnpath', None)
-        if target and os.path.isdir(target):
-            os.chdir(target)
-
-        dstepvals = list(range(params.dstepmin, params.dstepmax + 1))
-        modelselectdata.output_val[i] = output_val
-
-        # --- Test ---
+            model_select_data.output_tr[i] = output_tr
+        
+        # Calculate training residuals
+        obstr = Struct(data=[])
+        obstrain = []
+        for k in range(params.Ntests):
+            residual = train_cell.y[k] - output_tr.yhat[k]
+            obstr.data.append(residual)
+            obstrain.append(Struct(data=residual))
+        
+        if not hasattr(model_select_data, 'obstrain'):
+            model_select_data.obstrain = []
+        if i >= len(model_select_data.obstrain):
+            model_select_data.obstrain.append(obstrain)
+        else:
+            model_select_data.obstrain[i] = obstrain
+        
+        # Validation phase
+        params.Ntests = len(vld.y)
+        output_val, params = mainREGcode_ressarch(model_select_data.tuneval[i], tr, vld, 
+                                                 [params.algo[i]], params)
+        yval_predicted = output_val.yhat
+        
+        if hasattr(params, 's2flightpath'):
+            os.chdir(params.s2flightpath)
+            os.chdir('..')
+        else:
+            os.chdir(getattr(params, 'fcnpath', '.'))
+        
+        dstepvals = np.arange(params.dstepmin, params.dstepmax + 1)
+        
+        if not hasattr(model_select_data, 'output_val'):
+            model_select_data.output_val = []
+        if i >= len(model_select_data.output_val):
+            model_select_data.output_val.append(output_val)
+        else:
+            model_select_data.output_val[i] = output_val
+        
+        # Testing phase
         params.Ntests = len(test.y)
-        output_tst = mainREGcode_ressarch(
-            modelselectdata.tuneval[i], train, test, [params.algo[i]], params
-        )
-        ytestPredicted = output_tst.yhat
-        modelselectdata.output_tst[i] = output_tst
-
-        # --- Observation structures per prediction horizon ---
-        obsval_steps = [None] * len(dstepvals)
-        obstest_steps = [None] * len(dstepvals)
-        for ds_idx, dstep in enumerate(dstepvals):
-            obsval_steps[ds_idx] = truthdata(
-                vld, yvalPredicted, params, rawdata_val, obstrain, ds_idx + 1
-            )
-            obstest_steps[ds_idx] = truthdata(
-                test, ytestPredicted, params, rawdata_tst, obstrain, ds_idx + 1
-            )
-        modelselectdata.obsval[i] = obsval_steps
-        modelselectdata.obstest[i] = obstest_steps
-
-        header = params.header
-        modelselectdata.header = header
-        et = time.process_time() - et
-
-        # 3. LDS time-series learning (if detection requires it)
-        need_lds = (len(loc) > 1) or any(l != 2 for l in loc)
-        if need_lds:
-            ord_range = list(range(params.nmin, params.nmax + 1))
-            print(f"Now training LDS w/ model orders ranging from {min(ord_range)} to {max(ord_range)}")
-            et = time.process_time()
-
-            accept_dir = os.environ.get('ACCEPT_DIR', '')
-            if accept_dir and os.path.isdir(accept_dir):
-                os.chdir(accept_dir)
-
-            if params.distrib == 1 and len(ord_range) > 1:
-                # Distributed LDS learning
-                n_workers = len(ord_range)
-                arg_list = [
-                    (params, order, obstr.data, None, True)
-                    for order in ord_range
-                ]
-                results = _run_parallel(lds_timeseries, arg_list, n_workers)
-                good_idx = [j for j, r in enumerate(results) if r is not None]
-                modelselectdata.ord[i] = [ord_range[j] for j in good_idx]
-                if good_idx:
-                    modelselectdata.lds_params[i] = [results[j] for j in good_idx]
-                else:
-                    raise RuntimeError('No valid LDS models found !')
+        output_tst = mainREGcode_ressarch(model_select_data.tuneval[i], train, test, 
+                                         params.algo[i], params)
+        ytest_predicted = output_tst.yhat
+        
+        if not hasattr(model_select_data, 'output_tst'):
+            model_select_data.output_tst = []
+        if i >= len(model_select_data.output_tst):
+            model_select_data.output_tst.append(output_tst)
+        else:
+            model_select_data.output_tst[i] = output_tst
+        
+        # Calculate observation metrics for different detection steps
+        obsval = {}
+        obstest = {}
+        for dstep_idx, dstep in enumerate(dstepvals):
+            obsval[dstep_idx] = truthdata(vld, yval_predicted, params, rawdata_val, obstrain, dstep)
+            obstest[dstep_idx] = truthdata(test, ytest_predicted, params, rawdata_tst, obstrain, dstep)
+        
+        if not hasattr(model_select_data, 'obsval'):
+            model_select_data.obsval = []
+            model_select_data.obstest = []
+            
+        if i >= len(model_select_data.obsval):
+            model_select_data.obsval.append(obsval)
+            model_select_data.obstest.append(obstest)
+        else:
+            model_select_data.obsval[i] = obsval
+            model_select_data.obstest[i] = obstest
+        
+        model_select_data.header = params.header
+        
+        et = time.time() - et
+        
+        # LDS model training
+        if len(loc) > 1 or any(l != 2 for l in loc):
+            ord_vals = np.arange(params.nmin, params.nmax + 1)
+            print(f"Now training LDS w/ model orders ranging from {ord_vals.min()} to {ord_vals.max()}")
+            
+            et = time.time()
+            os.chdir(os.getenv('ACCEPT_DIR', '.'))
+            
+            if params.distrib == 1 and len(ord_vals) > 1:
+                # Distributed LDS training - TODO: implement
+                pass
             else:
-                # Sequential LDS learning
-                lds_results = []
-                for order in ord_range:
-                    lds_results.append(
-                        lds_timeseries(params, order, obstr.data, None, True)
-                    )
-                modelselectdata.ord[i] = ord_range
-                modelselectdata.lds_params[i] = lds_results
-
-            et = time.process_time() - et
+                # Serial LDS training
+                if not hasattr(model_select_data, 'lds_params'):
+                    model_select_data.lds_params = []
+                if i >= len(model_select_data.lds_params):
+                    model_select_data.lds_params.append([])
+                
+                for j, ord_val in enumerate(ord_vals):
+                    result = lds_timeseries(params, ord_val, obstr.data, None, True)
+                    model_select_data.lds_params[i].append(result)
+            
+            et = time.time() - et
             print(f"Finished learning LDS parameters for all model orders in {et:.2f} sec")
-
-        # 4. Detection threshold optimisation (leveltune)
-        s = Params()
-        s.fieldinit = None
-
-        # Identify which detection methods are NOT in detectiontypes (i.e. custom)
-        detectionstring = [
-            d not in detectiontypes for d in params.detect
-        ]
-        # Check if any matched detection index is < 7 (non-SPRT)
+        
+        # Detection optimization
+        s = Struct(fieldinit=[])
+        
         run_leveltune = False
-        for j, d in enumerate(params.detect):
-            if d in detectiontypes:
-                idx_1based = detectiontypes.index(d) + 1
-                if idx_1based < 7:
+        for detect in detect_list:
+            if detect in detection_types:
+                # 1-based index to match MATLAB logic (SPRT is 7)
+                idx = detection_types.index(detect) + 1 
+                if idx < 7:
                     run_leveltune = True
                     break
-
+        
         if run_leveltune:
             print('Now optimizing critical threshold to match ground truth, for relevant detection techniques')
-            et = time.process_time()
-
-            # Initialise per-algorithm detection params container
-            modelselectdata.params[i] = Params()
-            modelselectdata.params[i].auctemp = [None] * len(dstepvals)
-            modelselectdata.params[i].rocdatatemp = [None] * len(dstepvals)
-
+            et = time.time()
+            
             if params.distrib == 1:
-                n_workers = getattr(params.detection, 'Nwork', 4)
-                arg_list = [(obsval_steps[ds],) for ds in range(len(dstepvals))]
-                results = _run_parallel(leveltune, arg_list, n_workers)
-                for ds in range(len(dstepvals)):
-                    if results[ds] is not None:
-                        auc_val, rocdata_val = results[ds]
-                        modelselectdata.params[i].auctemp[ds] = auc_val
-                        modelselectdata.params[i].rocdatatemp[ds] = rocdata_val
-                    else:
-                        raise RuntimeError('Empty result for distributed job !')
+                # Distributed threshold optimization - TODO: implement
+                pass
             else:
-                for ds in range(len(dstepvals)):
-                    auc_val, rocdata_val = leveltune(obsval_steps[ds])
-                    modelselectdata.params[i].auctemp[ds] = auc_val
-                    modelselectdata.params[i].rocdatatemp[ds] = rocdata_val
-
-            # Pick the prediction horizon that maximises AUC
-            auc_arr = np.array(modelselectdata.params[i].auctemp, dtype=float)
-            dstepIdx = int(np.nanargmax(auc_arr))
-
-            modelselectdata.params[i].auc = modelselectdata.params[i].auctemp[dstepIdx]
-            modelselectdata.params[i].rocdata = modelselectdata.params[i].rocdatatemp[dstepIdx]
-            modelselectdata.params[i].dstep = dstepvals[dstepIdx]
-            print(
-                f"Optimal prediction horizon is {modelselectdata.params[i].dstep} steps, "
-                f"with AUC = {modelselectdata.params[i].auc}"
-            )
-
-            # Select threshold L based on constraint type
-            rocdata = modelselectdata.params[i].rocdata
-            avg_stats = rocdata.avg_stats
+                # Serial threshold optimization
+                for dstep_idx in obsval.keys():
+                    auc_val, rocdata = leveltune(obsval[dstep_idx])
+                    
+                    if not hasattr(model_select_data, 'params'):
+                        model_select_data.params = []
+                    if i >= len(model_select_data.params):
+                        model_select_data.params.append(Struct())
+                    
+                    if not hasattr(model_select_data.params[i], 'auctemp'):
+                        model_select_data.params[i].auctemp = {}
+                        model_select_data.params[i].rocdatatemp = {}
+                    
+                    model_select_data.params[i].auctemp[dstep_idx] = auc_val
+                    model_select_data.params[i].rocdatatemp[dstep_idx] = rocdata
+            
+            # Find optimal decision step (argmax of AUC)
+            auctemp_vals = list(model_select_data.params[i].auctemp.values())
+            dstep_idx_optimal = list(model_select_data.params[i].auctemp.keys())[np.argmax(auctemp_vals)]
+            
+            model_select_data.params[i].auc = model_select_data.params[i].auctemp[dstep_idx_optimal]
+            model_select_data.params[i].rocdata = model_select_data.params[i].rocdatatemp[dstep_idx_optimal]
+            model_select_data.params[i].dstep = dstepvals[dstep_idx_optimal]
+            
+            print(f"Optimal prediction horizon is {model_select_data.params[i].dstep} steps, with AUC = {model_select_data.params[i].auc:.4f}")
+            
+            # Find optimal likelihood threshold
+            rocdata_stats = model_select_data.params[i].rocdata.avg_stats
+            
             if params.consttype == 1:
-                LvalIdx = int(np.argmin(np.abs(params.maxfprate - np.asarray(avg_stats.fprate))))
+                fprate_vals = rocdata_stats.fprate
+                lval_idx = np.argmin(np.abs(params.maxfprate - fprate_vals))
             elif params.consttype == 2:
-                LvalIdx = int(np.argmin(np.abs(params.maxpmd - np.asarray(avg_stats.pmd))))
+                pmd_vals = rocdata_stats.pmd
+                lval_idx = np.argmin(np.abs(params.maxpmd - pmd_vals))
             else:
-                LvalIdx = int(np.argmin(
-                    np.abs(np.asarray(avg_stats.pmd) - np.asarray(avg_stats.fprate))
-                ))
-            modelselectdata.params[i].L = avg_stats.thresh[LvalIdx]
-
-            et = time.process_time() - et
+                pmd_vals = rocdata_stats.pmd
+                fprate_vals = rocdata_stats.fprate
+                lval_idx = np.argmin(np.abs(pmd_vals - fprate_vals))
+            
+            model_select_data.params[i].L = rocdata_stats.thresh[lval_idx]
+            
+            et = time.time() - et
             print(f"Finished optimizing critical threshold to match ground truth in {et:.2f} sec")
-
-        # 5. Detection calls
-        for j, detect_method in enumerate(params.detect):
-            if detect_method in detectiontypes:
-                det_idx = detectiontypes.index(detect_method) + 1  # 1-based
-
-                if det_idx < 7:
-                    # Non-SPRT detection
-                    if need_lds:
-                        snew, params = detectioncall(
-                            obsval_steps[dstepIdx], obstest_steps[dstepIdx],
-                            params, det_idx,
-                            modelselectdata.params[i], modelselectdata.lds_params[i]
-                        )
+        
+        # Run detection algorithms
+        for j, detect in enumerate(detect_list):
+            if detect in detection_types:
+                detect_idx = detection_types.index(detect) + 1
+                
+                if detect_idx < 7:
+                    if len(loc) > 1 or any(l != 2 for l in loc):
+                        snew, params = detectioncall(obsval[dstep_idx_optimal], obstest[dstep_idx_optimal], 
+                                                    params, detect_idx, 
+                                                    model_select_data.params[i],
+                                                    model_select_data.lds_params[i])
                     else:
-                        snew, params = detectioncall(
-                            obsval_steps[dstepIdx], obstest_steps[dstepIdx],
-                            params, det_idx,
-                            modelselectdata.params[i]
-                        )
+                        snew, params = detectioncall(obsval[dstep_idx_optimal], obstest[dstep_idx_optimal], 
+                                                    params, detect_idx, 
+                                                    model_select_data.params[i])
                 else:
-                    # SPRT detection
-                    if need_lds:
-                        snew, params = detectioncall(
-                            obsval_steps[dstepIdx], obstest_steps[dstepIdx],
-                            params, det_idx,
-                            None, modelselectdata.lds_params[i]
-                        )
+                    if len(loc) > 1 or any(l != 2 for l in loc):
+                        snew, params = detectioncall(obsval[dstep_idx_optimal], obstest[dstep_idx_optimal], 
+                                                    params, detect_idx, None,
+                                                    model_select_data.lds_params[i])
                     else:
-                        snew, params = detectioncall(
-                            obsval_steps[dstepIdx], obstest_steps[dstepIdx],
-                            params, det_idx
-                        )
+                        snew, params = detectioncall(obsval[dstep_idx_optimal], obstest[dstep_idx_optimal], 
+                                                    params, detect_idx)
+                
+                s = mergeParams(s, snew)
+        
+        # Create rocarea
+        rocarea = []
+        if i >= len(rocarea):
+            rocarea.append(None)
+        rocarea[i] = {k: v for k, v in vars(s).items() if k != 'fieldinit'}
+        
+        # Clean up distributed jobs
+        if params.distrib == 1 and getattr(params, 'mcr', 0) == 1:
+            for j in params.jobrecordID:
+                # TODO: destroy jobs - destroyJobNew(job)
+                pass
+    
+    return model_select_data, rocarea
 
-                s = _merge_params(s, snew)
 
-        # Strip the fieldinit sentinel and store
-        rocarea_i = Params()
-        for key, val in vars(s).items():
-            if key != 'fieldinit':
-                setattr(rocarea_i, key, val)
-        rocarea[i] = rocarea_i
+# Placeholder functions updated to use and return Struct objects
+def make_datafiles(params: Any, mode: int) -> Tuple:
+    def load_data_from_path(path: str) -> Tuple[np.ndarray, List[str]]:
+        if not os.path.isdir(path):
+            return np.array([]), []
+        data_list = []
+        csv_files = glob.glob(os.path.join(path, '*.csv'))
+        for csv_file in csv_files:
+            df = pd.read_csv(csv_file)
+            data_list.append(df.values)
+        mat_files = glob.glob(os.path.join(path, '*.mat'))
+        for mat_file in mat_files:
+            try:
+                mat_data = sio.loadmat(mat_file, struct_as_record=False, squeeze_me=True)
+                for key in mat_data.keys():
+                    if not key.startswith('__') and isinstance(mat_data[key], np.ndarray):
+                        if mat_data[key].ndim == 2:
+                            data_list.append(mat_data[key])
+            except Exception as e:
+                print(f"Warning: Could not load {mat_file}: {e}")
+        concatenated = np.vstack(data_list) if data_list else np.array([])
+        return concatenated, []
+    
+    print("Loading training data...")
+    train_data, _ = load_data_from_path(getattr(params, 'nompath', ''))
+    rawdata_tr = train_data.copy()
+    
+    header = getattr(params, 'header', [])
+    target_name = getattr(params, 'targetName', '')
+    target_idx = 0
+    if target_name and header:
+        try:
+            target_idx = header.index(target_name)
+        except ValueError:
+            target_idx = 0 
+    
+    feature_indices = getattr(params, 'channelContineous', list(range(len(header))))
+    
+    if train_data.size > 0:
+        tr_y = train_data[:, target_idx] if target_idx < train_data.shape[1] else np.zeros(len(train_data))
+        tr_x = train_data[:, feature_indices] if feature_indices else train_data
+    else:
+        tr_x = np.array([])
+        tr_y = np.array([])
+    
+    train_cell = Struct(
+        x=[tr_x[i:i+1, :] for i in range(len(tr_y))] if len(tr_y) > 0 else [],
+        y=[np.array([tr_y[i]]) for i in range(len(tr_y))] if len(tr_y) > 0 else []
+    )
+    
+    tr = Struct(
+        x=tr_x,
+        y=tr_y,
+        header=[header[i] for i in feature_indices] if header else []
+    )
+    
+    Statistics = Struct(
+        mean=np.mean(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
+        std=np.std(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
+        min=np.min(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
+        max=np.max(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
+        samples=len(tr_y)
+    )
+    
+    if mode == 2: 
+        print("Loading validation data...")
+        val_data, _ = load_data_from_path(getattr(params, 'valpath', ''))
+        rawdata_val = val_data.copy()
+        
+        if val_data.size > 0:
+            val_y = val_data[:, target_idx] if target_idx < val_data.shape[1] else np.zeros(len(val_data))
+            val_x = val_data[:, feature_indices] if feature_indices else val_data
+        else:
+            val_x = np.array([])
+            val_y = np.array([])
+        
+        vld = Struct(x=val_x, y=val_y, header=tr.header)
+        return tr, vld, train_cell, rawdata_val, rawdata_tr, params, Statistics, feature_indices, np.arange(train_data.shape[1]) if train_data.size > 0 else np.array([])
+        
+    else:
+        print("Loading test data...")
+        test_data, _ = load_data_from_path(getattr(params, 'testpath', ''))
+        rawdata_tst = test_data.copy()
+        
+        if test_data.size > 0:
+            test_y = test_data[:, target_idx] if target_idx < test_data.shape[1] else np.zeros(len(test_data))
+            test_x = test_data[:, feature_indices] if feature_indices else test_data
+        else:
+            test_x = np.array([])
+            test_y = np.array([])
+        
+        test = Struct(x=test_x, y=test_y, header=tr.header)
+        return tr, test, train_cell, rawdata_tst, rawdata_tr, params, Statistics, feature_indices, np.arange(train_data.shape[1]) if train_data.size > 0 else np.array([])
 
-        # Clean up distributed job records
-        if params.distrib == 1 and getattr(params, 'mcr', 2) == 1:
-            params.jobrecordID = []
+def modelsearch(tune_val: float, params: Any, tr: Any, trtest: Any, i: int) -> Tuple[float, float, Any]:
+    x0 = np.array([tune_val])
+    x, fval, localhistory, globalhistory = optimsearch(x0, params, tr, trtest, i)
+    return x[0], fval, localhistory
 
-    return modelselectdata, rocarea
+def lds_timeseries(params: Any, order: int, data: List, additional_arg, flag: bool) -> Any:
+    pass
+
+def leveltune(obs_data: Any) -> Tuple[float, Any]:
+    pass
+
+def detectioncall(obsval: Any, obstest: Any, params: Any, detect_idx: int, model_params: Any = None, lds_params: List = None) -> Tuple[Any, Any]:
+    pass
+
+def mergeParams(s: Any, snew: Any) -> Any:
+    for k, v in vars(snew).items():
+        setattr(s, k, v)
+    return s
