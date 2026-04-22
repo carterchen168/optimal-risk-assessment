@@ -11,7 +11,7 @@ from scipy.linalg import (
 )
 
 from guess import guess
-from ldsparamsIdx import lds_params_idx
+from ldsparamsidx import lds_params_idx
 from learn_kalman import learn_kalman
 from inverse_covariance_selection import inverse_covariance_selection
 
