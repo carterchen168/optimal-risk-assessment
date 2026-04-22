@@ -9,6 +9,7 @@ from modelsearch import optimsearch
 from mainREGcode_ressarch import mainREGcode_ressarch
 from modelopttest import modelopttest
 from detectopt.truthdata import truthdata
+from detectopt.leveltune import leveltune
 from ldslearn.lds_timeseries import lds_timeseries
 
 class Struct:
@@ -457,9 +458,6 @@ def modelsearch(tune_val: float, params: Any, tr: Any, trtest: Any, i: int) -> T
     x0 = np.array([tune_val])
     x, fval, localhistory, globalhistory = optimsearch(x0, params, tr, trtest, i)
     return x[0], fval, localhistory
-
-def leveltune(obs_data: Any) -> Tuple[float, Any]:
-    pass
 
 def detectioncall(obsval: Any, obstest: Any, params: Any, detect_idx: int, model_params: Any = None, lds_params: List = None) -> Tuple[Any, Any]:
     pass
