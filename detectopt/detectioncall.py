@@ -110,7 +110,7 @@ def detectioncall(
         stats.redtrain = Struct(x=levelparams.L)
 
         # TODO: implement detectopt.predopt.redlineopt
-        from detectopt.predopt.redlineopt import redlineopt
+        from detectopt.predopt import redlineopt
 
         auctemp, fptemp, tptemp, patemp, pcatemp, lavaltemp = [], [], [], [], [], []
         for lds in lds_params:
@@ -153,7 +153,7 @@ def detectioncall(
         stats.redval = Struct(x=levelparams.L)
 
         # TODO: implement detectopt.predopt.exceedvalidation
-        from detectopt.predopt.exceedvalidation import exceedvalidation
+        from detectopt.predopt import exceedvalidation
 
         stats.redval.auc, stats.redval.rocdata = exceedvalidation(stats.redval.x, levelparams.dstep, obsval)
 

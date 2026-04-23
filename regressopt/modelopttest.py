@@ -1,5 +1,5 @@
 import numpy as np
-from mainREGcode_ressarch import mainREGcode_ressarch
+from regressopt import mainREGcode_ressarch
 
 class Struct:
     """Lightweight class for dot-notation, matching the rest of the framework."""

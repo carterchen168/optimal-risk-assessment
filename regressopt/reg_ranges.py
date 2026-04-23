@@ -3,7 +3,6 @@ import numpy as np
 import tkinter as tk
 from tkinter import simpledialog
 import user_input_ressarch as user_input
-from utils import list_dialog
 
 
 def run():

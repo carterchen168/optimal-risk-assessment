@@ -5,13 +5,9 @@ import glob
 import pandas as pd
 import scipy.io as sio
 from typing import Dict, List, Tuple, Any
-from modelsearch import optimsearch
-from mainREGcode_ressarch import mainREGcode_ressarch
-from modelopttest import modelopttest
-from detectopt.truthdata import truthdata
-from detectopt.leveltune import leveltune
+from regressopt import mainREGcode_ressarch, modelopttest, optimsearch
+from detectopt import truthdata, leveltune, detectioncall
 from ldslearn.lds_timeseries import lds_timeseries
-from detectopt.detectioncall import detectioncall
 
 class Struct:
     """A lightweight class to replicate MATLAB struct dot-notation behavior."""

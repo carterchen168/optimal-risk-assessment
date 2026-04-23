@@ -1,9 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize, differential_evolution, dual_annealing, shgo
-
-# Placeholder for the external objective function expected by the script
-def modelopttest(x, params, i, tr, trtest):
-    pass # Replace with actual objective logic
+from regressopt import modelopttest
 
 def optimsearch(x0, params, tr, trtest, i):
     x0 = np.array(x0, dtype=float)
