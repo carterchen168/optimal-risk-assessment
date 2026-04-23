@@ -11,6 +11,7 @@ from modelopttest import modelopttest
 from detectopt.truthdata import truthdata
 from detectopt.leveltune import leveltune
 from ldslearn.lds_timeseries import lds_timeseries
+from detectopt.detectioncall import detectioncall
 
 class Struct:
     """A lightweight class to replicate MATLAB struct dot-notation behavior."""
@@ -42,7 +43,7 @@ def run(params: Any) -> Tuple[Any, List]:
     model_select_data.rawdata_tr = rawdata_tr
     model_select_data.Statistics = Statistics
     
-    train, test, train_cell, rawdata_tst, rawdata_tr = make_datafiles(params, 3)
+    train, test, train_cell, rawdata_tst, rawdata_tr, params, _, _, _ = make_datafiles(params, 3)
     
     trtest = Struct()
     trtest.x = [tr.x]
@@ -196,8 +197,8 @@ def run(params: Any) -> Tuple[Any, List]:
         
         # Testing phase
         params.Ntests = len(test.y)
-        output_tst = mainREGcode_ressarch(model_select_data.tuneval[i], train, test, 
-                                         params.algo[i], params)
+        output_tst, params = mainREGcode_ressarch(model_select_data.tuneval[i], train, test, 
+                             [params.algo[i]], params)
         ytest_predicted = output_tst.yhat
         
         if not hasattr(model_select_data, 'output_tst'):
@@ -458,9 +459,6 @@ def modelsearch(tune_val: float, params: Any, tr: Any, trtest: Any, i: int) -> T
     x0 = np.array([tune_val])
     x, fval, localhistory, globalhistory = optimsearch(x0, params, tr, trtest, i)
     return x[0], fval, localhistory
-
-def detectioncall(obsval: Any, obstest: Any, params: Any, detect_idx: int, model_params: Any = None, lds_params: List = None) -> Tuple[Any, Any]:
-    pass
 
 def mergeParams(s: Any, snew: Any) -> Any:
     for k, v in vars(snew).items():
