@@ -173,7 +173,7 @@ def detectioncall(
         stats.predtrain = Struct(x=levelparams.L, predict=[])
 
         # TODO: implement detectopt.predopt.predtrainopt
-        from detectopt.predopt.predtrainopt import predtrainopt
+        from detectopt.predopt import predtrainopt
 
         auctemp, fptemp, tptemp, patemp, pcatemp, lavaltemp = [], [], [], [], [], []
         for lds in lds_params:
@@ -219,7 +219,7 @@ def detectioncall(
         stats.predval = Struct(x=levelparams.L, predict=[])
 
         # TODO: implement detectopt.predopt.predlineopt
-        from detectopt.predopt.predlineopt import predlineopt
+        from detectopt.predopt import predlineopt
 
         auctemp, rocdatatemp = [], []
         for lds in lds_params:

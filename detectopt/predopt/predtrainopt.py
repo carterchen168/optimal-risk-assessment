@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import norm
 from sklearn.metrics import auc as sk_auc
-from detectopt.predopt import Lasearch
+from detectopt.predopt.Lasearch import Lasearch
 
 
 class Struct:
@@ -30,7 +30,6 @@ try:
 except Exception:
     unceventprob = None
 
-
 def _to_1d_float(x) -> np.ndarray:
     return np.asarray(x, dtype=float).reshape(-1)
 
@@ -49,7 +48,7 @@ def _safe_variance(v: float, fallback: float = 1.0) -> float:
 
 
 def _estimate_stationary_var(lds_params) -> float:
-    """Estimate y variance used by redline alarm scoring."""
+    """Estimate stationary output variance from LDS covariance fields."""
     cdl = np.asarray(getattr(lds_params, "cdl", [[1.0]]), dtype=float)
     rvdl = np.asarray(getattr(lds_params, "rvdl", [[0.0]]), dtype=float)
 
@@ -65,20 +64,23 @@ def _estimate_stationary_var(lds_params) -> float:
     return _safe_variance(_to_scalar_float(y_cov), fallback=1.0)
 
 
-def _estimate_reddist(lds_params, dstep: int, yss: float) -> float:
-    """Estimate redline predictive distribution variance at horizon dstep."""
-    if callable(createValarmmatrix):
+def _estimate_preddist(lds_params, dstep: int, yss: float) -> float:
+    """Extract predictive alarm variance preddist = Valarm[dstep-1, dstep-1].
+
+    Reads from lds_params.Valarm if already set; otherwise falls back to yss.
+    Mirrors MATLAB: lds_params.preddist = lds_params.Valarm(dstep, dstep).
+    """
+    if hasattr(lds_params, "Valarm"):
         try:
-            valarm = np.asarray(createValarmmatrix(lds_params, np.arange(1, dstep + 1), np.arange(1, dstep + 1)), dtype=float)
+            valarm = np.asarray(lds_params.Valarm, dtype=float)
             if valarm.ndim == 2 and valarm.shape[0] >= dstep and valarm.shape[1] >= dstep:
                 return _safe_variance(float(valarm[dstep - 1, dstep - 1]), fallback=yss)
         except Exception:
             pass
-
     return float(yss)
 
 
-def _estimate_pc(lds_params, x: float, dstep: int, reddist: float) -> float:
+def _estimate_pc(lds_params, x: float, dstep: int, preddist: float) -> float:
     """Estimate probability of event for class-mixture ROC synthesis."""
     if callable(unceventprob):
         try:
@@ -92,14 +94,18 @@ def _estimate_pc(lds_params, x: float, dstep: int, reddist: float) -> float:
         except Exception:
             pass
 
-    sigma = np.sqrt(_safe_variance(reddist, fallback=1.0))
-    # Fallback: exceedance probability under a Gaussian residual model.
+    sigma = np.sqrt(_safe_variance(preddist, fallback=1.0))
+    # Fallback: exceedance probability under a Gaussian predictive residual model.
     pc_val = 2.0 * norm.sf(abs(float(x)) / sigma)
     return float(np.clip(pc_val, 1e-6, 1.0 - 1e-6))
 
-def redlineopt(params, lds_params, dstep, x):
+
+def predtrainopt(params, lds_params, dstep, x):
     """
-    Translation target of ACCEPT/detectopt/predopt/redlineopt.m.
+    Translation of ACCEPT/detectopt/predopt/predtrainopt.m.
+
+    Predictive alarm training: computes ROC/AUC for the predictive (flag=2)
+    alarm family using Kalman-filter-based predictive distributions.
 
     Returns:
         auc, fp, tp, pa, pca, laval
@@ -107,36 +113,41 @@ def redlineopt(params, lds_params, dstep, x):
     dstep = int(dstep)
     x = float(np.asarray(x, dtype=float).reshape(-1)[0])
 
-    # Keep MATLAB-style field updates on the LDS struct.
+    # Mirror MATLAB field assignments on the LDS struct.
     lds_params.fixed = x
     lds_params.dstep = dstep
 
+    # Build uncertainty covariance matrices when helpers are available.
     if callable(createVunceventmatrix):
         try:
             lds_params.Vuncevent = createVunceventmatrix(lds_params)
-            newparams = Struct(**vars(lds_params))
-            newparams.dstep = dstep + 1
-            lds_params.Vunceventplusone = createVunceventmatrix(newparams)
+        except Exception:
+            pass
+
+    if callable(createValarmmatrix):
+        try:
+            lds_params.Valarm = createValarmmatrix(
+                lds_params, np.arange(1, dstep + 1), np.arange(1, dstep + 1)
+            )
         except Exception:
             pass
 
     yss = _estimate_stationary_var(lds_params)
-    reddist = _estimate_reddist(lds_params, dstep, yss)
+    preddist = _estimate_preddist(lds_params, dstep, yss)
 
     lds_params.yss = yss
-    lds_params.reddist = reddist
+    lds_params.preddist = preddist
 
-    pc = _estimate_pc(lds_params, x=x, dstep=dstep, reddist=reddist)
+    pc = _estimate_pc(lds_params, x=x, dstep=dstep, preddist=preddist)
     lds_params.pc = pc
 
-    
-    # Execute Lasearch for redlineopt (flag=1).
-    fp, tp, pa, pca, laval = Lasearch(lds_params, pc, params.tol, 1)
+    # flag=2 selects the predictive alarm path inside Lasearch.
+    fp, tp, pa, pca, laval = Lasearch(lds_params, pc, params.tol, 2)
     fp = _to_1d_float(fp)
     tp = _to_1d_float(tp)
     pa = _to_1d_float(pa)
     pca = _to_1d_float(pca)
     laval = _to_1d_float(laval)
-    # Replace manual trapezoid AUC with sklearn utility per project rule.
+    # Replace manual MATLAB trapezoid AUC with sklearn per project rule.
     auc_val = float(sk_auc(fp, tp)) if fp.size > 1 and tp.size > 1 else 0.5
     return auc_val, fp, tp, pa, pca, laval
