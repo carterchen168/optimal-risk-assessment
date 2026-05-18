@@ -4,4 +4,5 @@ def merge_params(p1: dict, p2: dict) -> dict:
     If keys overlap, p2's values will overwrite p1's.
     """
 
-    return {**p1, **p2}
+    # return {**p1, **p2}
+    return p1 | p2 

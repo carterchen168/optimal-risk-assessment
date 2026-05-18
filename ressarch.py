@@ -35,8 +35,8 @@ if oldresults == 'no':
             configIdx = list_dialog(file_names, 'Pick one of the following previously saved configurations:', multiple=False)
             
             try:
-                import extractacceptmetadata
-                extractacceptmetadata.run()
+                import extract_accept_metadata
+                extract_accept_metadata.run()
             except ImportError:
                 pass
                 

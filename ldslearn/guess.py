@@ -1,20 +1,3 @@
-"""
-guess.py
-========
-Python equivalent of guess.m (ACCEPT idslearn subfolder).
-
-PURPOSE
--------
-Generates random initial-guess matrices for the EM LDS algorithm.
-The diagonal form for A_g (instead of a dense randn matrix) was introduced
-to help enforce stability of the initial model.
-(Comment by Rodney A. Martin, 6/4/2010)
-
-DEPENDENCIES
-------------
-    numpy
-"""
-
 import numpy as np
 
 

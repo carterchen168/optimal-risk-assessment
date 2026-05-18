@@ -3,7 +3,7 @@ from em_converged import em_converged
 
 
 # ---------------------------------------------------------------------------
-# External stubs (source files not provided)
+# External stubs
 # ---------------------------------------------------------------------------
 
 def ExactEstep(y, u, pstruct_obj):
