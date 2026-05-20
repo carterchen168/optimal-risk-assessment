@@ -63,7 +63,7 @@ def _select_constraint_index(fp: np.ndarray, pmd: np.ndarray, params: Any) -> in
         return int(np.argmin(np.abs(fp - params.maxfprate)))
     if params.consttype == 2:
         return int(np.argmin(np.abs(pmd - params.maxpmd)))
-    return int(np.argmin(np.abs(pmd - fp)))
+    return int(np.argmin(np.abs(pmd - fp))) # EER Rate
 
 
 def _predictive_alarm_series(obs_segment: Any, lds: Any, dstep: int, laopt: float) -> Tuple[np.ndarray, np.ndarray]:

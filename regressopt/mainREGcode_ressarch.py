@@ -8,6 +8,7 @@ from sklearn.linear_model import Ridge, RANSACRegressor
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.neural_network import MLPRegressor
+from regressopt.elm import ELMRegressor
 
 class Struct:
     """Lightweight class for dot-notation."""
@@ -179,18 +180,22 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
 
             # 9. Extreme Learning Machine (ELM)
             elif algo_idx == 9:
-                # Scikit-learn does not have native ELMs. 
-                # Falling back to a standard MLP/Neural Net with x nodes.
+                # ELM uses a single random hidden layer and closed-form output weights.
                 if not hasattr(runOptions, 'modelELM'):
                     nodes = max(1, int(round(x)))
-                    model = MLPRegressor(hidden_layer_sizes=(nodes,), max_iter=1000)
+                    activation = getattr(runOptions, 'ActivationFunction', 'sig')
+                    random_seed = getattr(runOptions, 'randomSeedELM', 0)
+                    orthogonal = bool(getattr(runOptions, 'orth_flag_ELM', 0))
+                    alpha = float(getattr(runOptions, 'elm_alpha', 1e-3))
+                    elm = ELMRegressor(hidden_units=nodes, activation=activation, alpha=alpha, random_state=random_seed, orthogonal=orthogonal)
+                    model = make_pipeline(StandardScaler(), elm)
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.elmTrainTime = time.time() - t0
                     runOptions.modelELM = model
                 else:
                     model = runOptions.modelELM
-                    
+
                 t0 = time.time()
                 y_pred = model.predict(tst_x_batch)
                 output.elmTestTime = time.time() - t0
