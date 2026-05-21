@@ -5,7 +5,7 @@ import glob
 import pandas as pd
 import scipy.io as sio
 from typing import Dict, List, Tuple, Any
-from regressopt import mainREGcode_ressarch, modelopttest, optimsearch
+from regressopt import mainREGcode_ressarch, modelopttest, optimsearch, GlobalDataScaler
 from detectopt import truthdata, leveltune, detectioncall
 from ldslearn.lds_timeseries import lds_timeseries
 
@@ -44,7 +44,37 @@ def run(params: Any) -> Tuple[Any, List]:
     trtest = Struct()
     trtest.x = [tr.x]
     trtest.y = [tr.y]
+
+    # ── Global Z-score normalisation ──────────────────────────────────────────
+    # Replicates zscoreStream.m / stdStream.m: fit ONCE on nominal training
+    # data, then apply transform-only to every other split.  This must happen
+    # before the cross-validation and optimization loops so that every fold
+    # and every optimizer iteration sees a single, consistent geometric space.
     
+
+    scaler = GlobalDataScaler()
+
+    # 1. Fit on nominal training data and transform in place (mode-2 tr)
+    tr.x, tr.y = scaler.fit_global_baselines(tr.x, tr.y)
+
+    # 2. Transform validation data — no re-fit
+    vld.x, vld.y = scaler.transform_evaluation_data(vld.x, vld.y)
+
+    # 3. Transform mode-3 training data (same source as tr; transform-only)
+    train.x, train.y = scaler.transform_evaluation_data(train.x, train.y)
+
+    # 4. Transform held-out test data
+    test.x, test.y = scaler.transform_evaluation_data(test.x, test.y)
+
+    # 5. Rebuild train_cell batches from the now-scaled train arrays
+    train_cell.x = [train.x[i:i+1, :] for i in range(len(train.y))]
+    train_cell.y = [np.array([train.y[i]]) for i in range(len(train.y))]
+
+    # 6. Rebuild trtest from the now-scaled tr arrays
+    trtest.x = [tr.x]
+    trtest.y = [tr.y]
+    # ─────────────────────────────────────────────────────────────────────────
+
     model_select_data.rawdata_val = rawdata_val
     model_select_data.rawdata_tst = rawdata_tst
     
