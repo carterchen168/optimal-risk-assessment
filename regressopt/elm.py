@@ -27,8 +27,8 @@ def _minmax_scale(x, x_min, x_max):
         rangex = xmax − xmin   (zero ranges clamped to 1 to avoid division by zero)
         x_normalized = 2 * (x − xmin) / rangex − 1
     """
-    rangex = x_max - x_min                              # (D,)
-    rangex = np.where(rangex == 0.0, 1.0, rangex)       # zero-range protection
+    rangex = x_max - x_min # (D,)
+    rangex = np.where(rangex == 0.0, 1.0, rangex) # zero-range protection
     return 2.0 * (x - x_min) / rangex - 1.0
 
 
@@ -71,14 +71,14 @@ def _activation_matrix(x_values, weights, bias, activation):
         # Each column of `weights` (n_features, n_hidden) is a center vector.
         # Transposing gives centers as rows: (n_hidden, n_features).
         # cdist returns the (N, n_hidden) matrix of pairwise squared Euclidean distances.
-        centers = weights.T                                         # (n_hidden, n_features)
-        dist_sq = cdist(x_values, centers, metric='sqeuclidean')   # (N, n_hidden)
+        centers = weights.T # (n_hidden, n_features)
+        dist_sq = cdist(x_values, centers, metric='sqeuclidean') # (N, n_hidden)
         # bias acts as a per-neuron variance scaling factor (RBFun.m: V = V .* BiasMatrix)
-        V = -dist_sq * bias                                         # (N, n_hidden), bias broadcast
+        V = -dist_sq * bias # (N, n_hidden), bias broadcast
         return np.exp(V)
 
     # Linear-projection activations (SigActFun.m / SinActFun.m pattern)
-    hidden_input = x_values @ weights + bias                        # (N, n_hidden)
+    hidden_input = x_values @ weights + bias # (N, n_hidden)
 
     if activation_name in {'sin', 'sine', 'sinusoidal'}:
         return np.sin(hidden_input)
@@ -119,7 +119,7 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
         self,
         hidden_units,
         activation='sig',
-        alpha=1e-1,         # Matches MATLAB fixed lam = 0.1 in buildELM.m
+        alpha=1e-1, # Matches MATLAB fixed lam = 0.1 in buildELM.m
         random_state=0,
         orthogonal=False,
     ):
@@ -150,13 +150,13 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
         n_hidden = self.hidden_units
 
         # ---- 1. Internal min–max scaling (mapminmax_apply_ELM.m) --------
-        self.xmin_ = x_values.min(axis=0)      # (n_features,)
+        self.xmin_ = x_values.min(axis=0) # (n_features,)
         self.xmax_ = x_values.max(axis=0)
-        self.ymin_ = y_values.min(axis=0)      # (n_outputs,)
+        self.ymin_ = y_values.min(axis=0) # (n_outputs,)
         self.ymax_ = y_values.max(axis=0)
 
-        x_scaled = _minmax_scale(x_values, self.xmin_, self.xmax_)  # (N, n_features)
-        y_scaled = _minmax_scale(y_values, self.ymin_, self.ymax_)  # (N, n_outputs)
+        x_scaled = _minmax_scale(x_values, self.xmin_, self.xmax_) # (N, n_features)
+        y_scaled = _minmax_scale(y_values, self.ymin_, self.ymax_) # (N, n_outputs)
 
         # ---- 2. Input weight initialisation  (rand(...)*2−1) -------------
         rng = np.random.default_rng(self.random_state)
@@ -166,7 +166,7 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
             # QR of a square uniform matrix gives orthonormal columns; take first n_hidden.
             raw = rng.uniform(-1.0, 1.0, size=(n_features, n_features))
             q_matrix, _ = np.linalg.qr(raw)
-            weights = q_matrix[:, :n_hidden]            # (n_features, n_hidden)
+            weights = q_matrix[:, :n_hidden] # (n_features, n_hidden)
         else:
             # MATLAB: IW = rand(n_hidden, n_features)*2−1  →  Python stores as (n_features, n_hidden)
             weights = rng.uniform(-1.0, 1.0, size=(n_features, n_hidden))
@@ -177,7 +177,7 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
                 weights = weights / norms
 
         # Bias: uniform [−1, 1]  (rand(1, nh)*2−1 for sig/sin; rand(1, nh) for rbf in MATLAB)
-        bias = rng.uniform(-1.0, 1.0, size=n_hidden)    # (n_hidden,)
+        bias = rng.uniform(-1.0, 1.0, size=n_hidden) # (n_hidden,)
 
         # ---- 3. Hidden-layer output matrix H ----------------------------
         hidden = _activation_matrix(x_scaled, weights, bias, self.activation)
@@ -189,11 +189,11 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
         # (buildELM.m lines 72-80; MATLAB condition: nh <= size(xtrain, 2) = N)
         lam = self.alpha
         if n_hidden <= n_samples:
-            A = hidden.T @ hidden + lam * np.eye(n_hidden)   # (n_hidden, n_hidden)
-            b = hidden.T @ y_scaled                           # (n_hidden, n_outputs)
+            A = hidden.T @ hidden + lam * np.eye(n_hidden) # (n_hidden, n_hidden)
+            b = hidden.T @ y_scaled # (n_hidden, n_outputs)
         else:
-            A = hidden @ hidden.T + lam * np.eye(n_samples)  # (N, N)
-            b = y_scaled                                      # (N, n_outputs)
+            A = hidden @ hidden.T + lam * np.eye(n_samples) # (N, N)
+            b = y_scaled # (N, n_outputs)
 
         try:
             x_sol = np.linalg.solve(A, b)
@@ -201,9 +201,9 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
             x_sol = np.linalg.lstsq(A, b, rcond=None)[0]
 
         if n_hidden <= n_samples:
-            output_weights = x_sol                           # (n_hidden, n_outputs)
+            output_weights = x_sol # (n_hidden, n_outputs)
         else:
-            output_weights = hidden.T @ x_sol                # (n_hidden, n_outputs)
+            output_weights = hidden.T @ x_sol # (n_hidden, n_outputs)
 
         # ---- Store model state -------------------------------------------
         self.input_weights_ = weights
@@ -238,7 +238,7 @@ class ELMRegressor(BaseEstimator, RegressorMixin):
         )
 
         # Raw prediction in [−1, 1] space
-        y_scaled = hidden @ self.output_weights_             # (N, n_outputs)
+        y_scaled = hidden @ self.output_weights_ # (N, n_outputs)
 
         # De-normalise (mapminmax_reverse_ELM.m)
         predictions = _minmax_reverse(y_scaled, self.ymin_, self.ymax_)

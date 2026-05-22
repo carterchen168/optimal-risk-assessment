@@ -1,7 +1,7 @@
 import time
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.svm import SVR, LinearSVR
+from sklearn.svm import SVR, NuSVR
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import BaggingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge, RANSACRegressor
@@ -81,17 +81,18 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
                 y_pred = model.predict(tst_x_batch)
                 output.svrTestTime = time.time() - t0
 
-            # 3. LibSVR (Linear SVR)
+            # 3. LibSVR (Nu-SVR with RBF Kernel)
             elif algo_idx == 3:
                 if not hasattr(runOptions, 'modelLibSVR'):
-                    model = LinearSVR(C=x, random_state=0)
+                    # Matches legacy MATLAB buildLSVR.m: Nu-SVR, RBF kernel, nu=0.4, C=x
+                    model = NuSVR(C=x, nu=0.4, kernel='rbf')
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.lsvmTrainTime = time.time() - t0
                     runOptions.modelLibSVR = model
                 else:
                     model = runOptions.modelLibSVR
-                    
+
                 t0 = time.time()
                 y_pred = model.predict(tst_x_batch)
                 output.lsvmTestTime = time.time() - t0
@@ -163,9 +164,24 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             # 8. Bagged Neural Networks
             elif algo_idx == 8:
                 if not hasattr(runOptions, 'modelbnets'):
-                    # x is number of hidden units
+                    # x is the base hidden width; allow a tuple/list in runOptions for deeper MLPs.
+                    # Tuple contins the hidden layer sizes (64,32,16) would mean 3 hidden layers with those widths
+                    # If not provided, use (x,) as a single hidden layer.
                     hidden_units = max(1, int(round(x)))
-                    base_nn = MLPRegressor(hidden_layer_sizes=(hidden_units,), max_iter=500)
+                    hidden_layer_sizes = getattr(runOptions, 'bnet_hidden_layer_sizes', (hidden_units,))
+                    if isinstance(hidden_layer_sizes, int):
+                        hidden_layer_sizes = (max(1, int(hidden_layer_sizes)),)
+                    else:
+                        hidden_layer_sizes = tuple(max(1, int(round(layer))) for layer in hidden_layer_sizes)
+                        if not hidden_layer_sizes:
+                            hidden_layer_sizes = (hidden_units,)
+
+                    activation = getattr(runOptions, 'bnet_activation', 'tanh')
+                    base_nn = MLPRegressor(
+                        hidden_layer_sizes=hidden_layer_sizes,
+                        activation=activation,
+                        max_iter=500,
+                    )
                     model = BaggingRegressor(estimator=base_nn, n_estimators=10, random_state=0)
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
