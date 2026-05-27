@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.linalg import svds
+from scipy.sparse.linalg import svds
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +147,9 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
     Morig = M.copy()
 
     # Check whether we're already done before any QP iteration
+    # scipy.sparse.linalg.svds returns (U, s, Vt) — Vt is already transposed.
+    # MATLAB svds(M,1) returns [u, s, v] where u,v are column vectors.
+    # Outer product u*v' (MATLAB) = u_vec @ v_vt  (Python, since v_vt = v.T)
     _, s_top, _ = svds(M, k=1)
     s_top = float(s_top)
 
@@ -158,8 +161,8 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
             return M.T
 
     # Add first constraint from the initial unstable solution
-    u_vec, _, v_vec = svds(M, k=1)
-    ebar = (u_vec @ v_vec.T).ravel(order='F')
+    u_vec, _, v_vt = svds(M, k=1)   # u_vec: (d,1), v_vt: (1,d)
+    ebar = (u_vec @ v_vt).ravel(order='F')   # (d,1)@(1,d) = (d,d) → vec
     G = np.vstack([G, ebar[np.newaxis, :]])
     h = np.append(h, 1.0)
 
@@ -177,7 +180,7 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
         M = m_vec.reshape((d, d), order='F')
 
         _, max_e, min_e = _get_eigenthings(M)
-        u_vec, s_arr, v_vec = svds(M, k=1)
+        u_vec, s_arr, v_vt = svds(M, k=1)
         s_top = float(s_arr)
 
         if simulate_LB1:
@@ -188,7 +191,7 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
                 break
 
         # Add constraint from current largest singular vectors
-        ebar = (u_vec @ v_vec.T).ravel(order='F')
+        ebar = (u_vec @ v_vt).ravel(order='F')
         G = np.vstack([G, ebar[np.newaxis, :]])
         h = np.append(h, 1.0)
 

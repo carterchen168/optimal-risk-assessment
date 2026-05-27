@@ -1,8 +1,9 @@
 import numpy as np
-from scipy.linalg import solve_discrete_lyapunov, qr, svd, pinv
+from scipy.linalg import solve_discrete_lyapunov, qr, svd, pinv, eig as scipy_eig
+from stablelds import learn_cg_model_em
 
 #    Copyright:
-   
+
 #            Peter Van Overschee, December 1995
 #            peter.vanoverschee@esat.kuleuven.ac.be
 
@@ -34,59 +35,191 @@ def _blkhank(Y: np.ndarray, num_rows: int, num_cols: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Remaining stubs
+# chkaux — AUX cache compatibility check (port of chkaux.m)
 # ---------------------------------------------------------------------------
 
 def chkaux(AUXin, i, Uaux, y11, ds_flag, Waux, sil):
     """
-    STUB — Check compatibility of the AUX auxiliary variable.
-    Original MATLAB signature:
-      [AUXin, Wflag] = chkaux(AUXin, i, Uaux, y(1,1), ds_flag, Waux, sil)
+    Check compatibility of an AUX auxiliary variable from a previous subid call.
+
+    Mirrors chkaux.m (Van Overschee, 1995).
+
+    Parameters
+    ----------
+    AUXin  : np.ndarray or None — cached AUX matrix from a previous call
+    i      : int                — current block-row parameter
+    Uaux   : float or None      — u[0, 0] of current input (None for stochastic)
+    y11    : float              — y[0, 0] of current output
+    ds_flag: int                — 1 = deterministic/combined, 2 = stochastic
+    Waux   : int                — weighting flag (0, 1, 2, or 3)
+    sil    : int                — 0 = verbose, 1 = silent
 
     Returns
     -------
-    AUXin  : ndarray or None — validated auxiliary data
-    Wflag  : int             — 1 if AUX was reused from a different W setting
+    AUX    : np.ndarray or None — validated (or cleared) AUX
+    Wflag  : int                — 1 if R info is OK but weight info is incompatible
     """
-    raise NotImplementedError(
-        "chkaux() source was not provided. "
-        "Implement or import it before calling subid()."
-    )
+    AUX   = AUXin
+    Wflag = 0
 
+    if AUXin is not None:
+        info = AUXin[0, :]
+        # Check ds_flag
+        if info[0] != ds_flag:
+            if ds_flag == 1:
+                _mydisp(sil, '      Warning: AUXin neglected: only valid for stochastic models')
+            if ds_flag == 2:
+                _mydisp(sil, '      Warning: AUXin neglected: only valid for deterministic models')
+            AUX = None
+        # Check i
+        if AUX is not None and info[1] != i:
+            _mydisp(sil, '      Warning: AUXin neglected: Incompatible i')
+            AUX = None
+        # Check first input sample (only for combined/deterministic)
+        if AUX is not None and Uaux is not None and info[2] != Uaux:
+            _mydisp(sil, '      Warning: AUXin neglected: Incompatible input')
+            AUX = None
+        # Check first output sample
+        if AUX is not None and info[3] != y11:
+            _mydisp(sil, '      Warning: AUXin neglected: Incompatible output')
+            AUX = None
+        # Check weighting
+        if AUX is not None and Waux != 0 and info[4] != Waux:
+            _mydisp(sil, '      Warning: Weighting part in AUXin neglected: Incompatible weight')
+            Wflag = 1
+
+    return AUX, Wflag
+
+
+# ---------------------------------------------------------------------------
+# _solvric — Forward Riccati equation solver (port of solvric.m)
+# ---------------------------------------------------------------------------
+
+def _solvric(A, G, C, L0):
+    """
+    Solve the forward Riccati equation:
+      P = A P A' + (G - A P C')(L0 - C P C')^{-1}(G - A P C')'
+
+    Uses the generalized eigenvalue decomposition approach from solvric.m
+    (Van Overschee, 1995).
+
+    Parameters
+    ----------
+    A  : (n, n)
+    G  : (n, l) — cross-covariance
+    C  : (l, n) — output matrix
+    L0 : (l, l) — innovation covariance
+
+    Returns
+    -------
+    P    : (n, n) — Riccati solution
+    flag : int    — 1 if eigenvalue lies on the unit circle (no valid solution)
+    """
+    if G is None or L0 is None or G.size == 0 or L0.size == 0:
+        return None, 0
+
+    n   = A.shape[0]
+    L0i = np.linalg.inv(L0)
+
+    # Construct the 2n × 2n pencil (AA, BB) from solvric.m:
+    #   AA = [A' - C'*L0i*G'   0 ]    BB = [I     -C'*L0i*C ]
+    #        [-G*L0i*G'         I ]         [0      A-G*L0i*C]
+    AA = np.block([
+        [A.T - C.T @ L0i @ G.T,  np.zeros((n, n))],
+        [-G @ L0i @ G.T,          np.eye(n)]
+    ])
+    BB = np.block([
+        [np.eye(n),          -C.T @ L0i @ C],
+        [np.zeros((n, n)),    A - G @ L0i @ C]
+    ])
+
+    ew, v = scipy_eig(AA, BB)
+    ew = np.asarray(ew, dtype=complex)
+
+    # Check for eigenvalue on the unit circle → no valid solution
+    flag = 0 if np.all(np.abs(np.abs(ew) - 1.0) > 1e-9) else 1
+
+    # Select the n eigenvalues with smallest magnitude (inside unit circle)
+    idx   = np.argsort(np.abs(ew))
+    V_s   = v[:, idx[:n]]
+
+    # P = real(V_s[n:2n, :] / V_s[:n, :])  — mirroring MATLAB's mrdivide
+    P = np.real(
+        np.linalg.lstsq(V_s[:n, :].T, V_s[n:, :].T, rcond=None)[0].T
+    )
+    return P, flag
+
+
+# ---------------------------------------------------------------------------
+# gl2kr — Kalman gain from Riccati solution (port of gl2kr.m)
+# ---------------------------------------------------------------------------
 
 def gl2kr(A, G, C, L0):
     """
-    STUB — Compute the Kalman gain K and innovations covariance Ro
-    from the triple (A, G, C, L0).
-    Original MATLAB signature:
-      [K, Ro] = gl2kr(A, G, C, L0)
+    Compute the Kalman gain K and innovations covariance Ro.
+
+    Solves the forward Riccati equation and derives:
+      Ro = L0 - C P C'
+      K  = (G - A P C') Ro^{-1}
+
+    Mirrors gl2kr.m (Van Overschee, 1995).
+
+    Parameters
+    ----------
+    A  : (n, n)
+    G  : (n, l)
+    C  : (l, n)
+    L0 : (l, l)
 
     Returns
     -------
-    K  : np.ndarray — Kalman gain matrix
-    Ro : np.ndarray — innovations covariance
+    K  : (n, l) or None
+    Ro : (l, l) or None
     """
-    raise NotImplementedError(
-        "gl2kr() source was not provided. "
-        "Implement or import it before calling subid()."
-    )
+    if G is None or L0 is None:
+        return None, None
+
+    P, flag = _solvric(A, G, C, L0)
+    if flag == 1 or P is None:
+        _mydisp(0, 'Warning: Non positive real covariance model => K = R = []')
+        return None, None
+
+    Ro = L0 - C @ P @ C.T
+    K  = np.linalg.solve(Ro.T, (G - A @ P @ C.T).T).T
+    return K, Ro
 
 
-def learnCGModelSS(Lhs_n, res_n, A, simulate_LB1, cvx_flag):
+# ---------------------------------------------------------------------------
+# learnCGModelSS — stable A correction for subspace identification
+# ---------------------------------------------------------------------------
+
+def learnCGModelSS(Xi, Xr, A, simulate_LB1, cvx_flag):
     """
-    STUB — learnCGModelSS: constraint-generation stable-A correction
-    (state-space / non-EM variant, called from subid).
-    Original MATLAB signature:
-      A_stable = learnCGModelSS(Lhs(1:n,:), res(1:n,:), A, 0, 1)
+    Learn a stable dynamics matrix from state sequences using constraint
+    generation.  Delegates to learn_cg_model_em() with the correct
+    QP-objective mapping for the state-space (non-EM) variant.
+
+    Mirrors learnCGModelSS.m: P = kron(I, Xi*Xi'), q = vec(Xi*Xr').
+    In learn_cg_model_em: P = kron(I, gamma1), q = vec(beta).
+    Mapping: gamma1 = Xi@Xi.T, beta = Xi@Xr.T.
+
+    Parameters
+    ----------
+    Xi          : (d, T-1) — state sequence at t = 0 .. T-2
+    Xr          : (d, T-1) — state sequence at t = 1 .. T-1
+    A           : (d, d)   — initial (possibly unstable) dynamics matrix
+    simulate_LB1: int      — 0 = stability CG, 1 = simulate Lacy-Bernstein 1
+    cvx_flag    : int/bool — use CVXPY instead of quadprog/SLSQP
 
     Returns
     -------
-    A_stable : np.ndarray — stable system matrix
+    A_stable : (d, d) — stable dynamics matrix
     """
-    raise NotImplementedError(
-        "learnCGModelSS() source was not provided. "
-        "Implement or import it before calling subid()."
-    )
+    gamma1 = Xi @ Xi.T
+    beta   = Xi @ Xr.T   # matches MATLAB q = vec(Xi*Xr')
+    return learn_cg_model_em(beta, gamma1, A,
+                              simulate_LB1=bool(simulate_LB1),
+                              cvx_flag=bool(cvx_flag))
 
 
 # ---------------------------------------------------------------------------

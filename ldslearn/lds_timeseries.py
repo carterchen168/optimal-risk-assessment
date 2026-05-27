@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 
 import numpy as np
@@ -14,6 +15,76 @@ from guess import guess
 from ldsparamsidx import lds_params_idx
 from learn_kalman import learn_kalman
 from inverse_covariance_selection import inverse_covariance_selection
+
+
+from subfun import subid as _subid_impl               # N4SID subspace identification
+from stablelds.learn_lds import learn_lds as _learn_lds_impl   # Hankel-SVD LDS initialiser
+from stablelds import learn_cg_model_em as _learn_cg_model_em_impl  # CG stability fix
+
+
+# ---------------------------------------------------------------------------
+# Thin wrappers that preserve the original local call-site signatures
+# ---------------------------------------------------------------------------
+
+def subid(y, u, i, n, *args):
+    """
+    N4SID subspace system identification.
+    Delegates to the root-level subid.py implementation.
+
+    Parameters
+    ----------
+    y    : np.ndarray (p, T)
+    u    : np.ndarray (m, T) or None
+    i    : int  — block-row size (= 2*nmax)
+    n    : int  — model order
+    *args: forwarded to subid() (AUXin, W, sil)
+
+    Returns
+    -------
+    A, B, C, D, K, Ro, AUX, ss, Qs, Ss, Rs, cvx_flag
+    """
+    return _subid_impl(y, u, i, n, *args)
+
+
+def learn_lds(y, n, i, algo):
+    """
+    Hankel-SVD LDS initialiser.
+    Delegates to the root-level learn_lds.py implementation.
+
+    Parameters
+    ----------
+    y    : np.ndarray (p, T)
+    n    : int  — model order
+    i    : int  — Hankel parameter d (number of stacked observations)
+    algo : int  — dynamics matrix learning method (1=CG, 2=LS, 3=LB1, 4=LB1-CG, 5=LB2)
+
+    Returns
+    -------
+    Ahat, Chat, Qhat, Rhat, Xhat, Ymean
+    """
+    return _learn_lds_impl(y, n, i, algo)
+
+
+def learn_cg_model_em(beta, gamma1, A_prev, simulate_LB1=False, cvx_flag=False):
+    """
+    Constraint-generation stable dynamics matrix correction (EM variant).
+    Delegates to the root-level learnCGModelEM.py implementation.
+
+    Parameters
+    ----------
+    beta        : np.ndarray (d, d) — EM sufficient statistic
+    gamma1      : np.ndarray (d, d) — EM sufficient statistic
+    A_prev      : np.ndarray (d, d) — current (possibly unstable) A matrix
+    simulate_LB1: bool
+    cvx_flag    : bool
+
+    Returns
+    -------
+    A_stable : np.ndarray (d, d)
+    """
+    return _learn_cg_model_em_impl(beta, gamma1, A_prev,
+                                    simulate_LB1=bool(simulate_LB1),
+                                    cvx_flag=bool(cvx_flag))
 
 
 # ---------------------------------------------------------------------------
@@ -41,70 +112,6 @@ def _null(M: np.ndarray) -> np.ndarray:
     Mirrors MATLAB null().
     """
     return null_space(M)
-
-
-# ---------------------------------------------------------------------------
-# Remaining stubs (source files not yet provided)
-# ---------------------------------------------------------------------------
-
-def subid(y, u, i, n, *args):
-    """
-    STUB — N4SID subspace system identification.
-    Original MATLAB signature:
-      [A, B, C, D, K, Ro, AUX, ss, Q, S, R] = subid(y, u, i, n, [], [], 1)
-
-    Parameters
-    ----------
-    y : np.ndarray (p, T)   — output sequence
-    u : np.ndarray (m, T)   — input sequence
-    i : int                 — block-row size (= 2*nmax)
-    n : int                 — requested model order
-
-    Returns
-    -------
-    A, B, C, D, K : np.ndarray or None
-    Ro, AUX, ss   : auxiliary outputs
-    Q, S, R       : noise covariance estimates (np.ndarray or None)
-    """
-    raise NotImplementedError(
-        "subid() (N4SID) source was not provided. "
-        "Implement or import it before calling lds_timeseries()."
-    )
-
-
-def learn_lds(y, n, i, algo):
-    """
-    STUB — learnLDS: SVD/subspace-based LDS initialiser.
-    Original MATLAB signature:
-      [A, C, Q, R, Xhat, Ymean] = learnLDS(y, n, i, algo)
-
-    Returns
-    -------
-    A, C    : np.ndarray
-    Q, R    : np.ndarray
-    X_hat   : np.ndarray — state estimates
-    Y_mean  : np.ndarray — output mean
-    """
-    raise NotImplementedError(
-        "learnLDS() source was not provided. "
-        "Implement or import it before calling lds_timeseries()."
-    )
-
-
-def learn_cg_model_em(beta, gamma1, A_prev, arg3, arg4):
-    """
-    STUB — learnCGModelEM: corrects an unstable A matrix.
-    Original MATLAB signature:
-      A_stable = learnCGModelEM(beta, gamma1, A_prev, 0, 1)
-
-    Returns
-    -------
-    A_stable : np.ndarray — stable system matrix
-    """
-    raise NotImplementedError(
-        "learnCGModelEM() source was not provided. "
-        "Implement or import it before calling lds_timeseries()."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +143,17 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
     params : object
         Updated with all learned/initialised LDS fields.
     """
+    # ------------------------------------------------------------------
+    # 0. Ensure params.init exists as a namespace object
+    # ------------------------------------------------------------------
+    class _Struct:
+        def __init__(self, **kw):
+            for k_, v in kw.items():
+                setattr(self, k_, v)
+
+    if not hasattr(params, 'init'):
+        params.init = _Struct()
+
     # ------------------------------------------------------------------
     # 1. Find the first usable data segment
     # ------------------------------------------------------------------
@@ -222,8 +240,8 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
         # ---- N4SID initialisation ----
         nsys = nmax
         (params.init.ad, params.init.bd, params.init.cd, params.init.dd,
-         params.init.K, Ro, AUX, ss, Q, S, R) = subid(y_seg, u_seg, i, nsys,
-                                                        None, None, 1)
+         params.init.K, Ro, AUX, ss, Q, S, R, _cvx) = subid(y_seg, u_seg, i, nsys,
+                                                              None, None, 1)
 
         if params.init.ad is None:
             # subid failed entirely — fall back to random guess
@@ -346,7 +364,13 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
         if not _is_pos_def(params.learned.xssd[:, :, -1]):
             if verbose:
                 print("Finding a positive definite P0")
-            posdef_P = inverse_covariance_selection(params.learned.xssd[:, :, -1], 0)
+            try:
+                posdef_P = inverse_covariance_selection(params.learned.xssd[:, :, -1], 0)
+            except (ValueError, Exception):
+                # Fallback: regularise with smallest eigenvalue nudge
+                S_p0 = params.learned.xssd[:, :, -1]
+                min_ev = float(np.min(np.linalg.eigvalsh(S_p0)))
+                posdef_P = S_p0 + (np.abs(min_ev) + 1e-6) * np.eye(S_p0.shape[0])
             params.learned.xssd = np.concatenate(
                 [params.learned.xssd, posdef_P[:, :, np.newaxis]], axis=2
             )

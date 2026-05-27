@@ -1,79 +1,291 @@
 import numpy as np
+import math
+from scipy.linalg import solve_triangular, cho_factor, cho_solve
 from em_converged import em_converged
 
 
 # ---------------------------------------------------------------------------
-# External stubs
+# Lightweight Struct (mirrors MATLAB dot-notation structs per AGENTS.md §3)
 # ---------------------------------------------------------------------------
 
-def ExactEstep(y, u, pstruct_obj):
-    """
-    STUB — Exact E-step with control inputs.
-    Original MATLAB signature:
-      [expt, loglik_t, err] = ExactEstep(y, u, pstruct(A,B,C,D,Q,R,initx,initV))
-
-    Returns
-    -------
-    expt     : object with fields Ex_x_1, Ex_x_0, Ey_x_0, Exx_.end,
-                                   Exx_.start, Eu_x_0, Ex_, Ex_u_1
-    loglik_t : float
-    err      : object (error diagnostics)
-    """
-    raise NotImplementedError("ExactEstep() source was not provided.")
+class Struct:
+    """Lightweight MATLAB-style struct for parameter and result payloads."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
 
-def ExactEstep_noinput(y, pstruct_obj):
-    """
-    STUB — Exact E-step without control inputs.
-    Original MATLAB signature:
-      [expt, loglik_t, err] = ExactEstep_noinput(y, pstruct_noinput(A,C,Q,R,initx,initV))
-
-    Returns
-    -------
-    expt     : object with fields Ex_x_1, Ex_x_0, Ey_x_0, Exx_.end,
-                                   Exx_.start, Ex_
-    loglik_t : float
-    err      : object
-    """
-    raise NotImplementedError("ExactEstep_noinput() source was not provided.")
-
-
-def ApproxEStep(y, u, klim, window, n_particles, is_dim, os_dim):
-    """STUB — Approximate E-step (ASOS mode)."""
-    raise NotImplementedError("ApproxEStep() source was not provided.")
-
-
-def Step(newparams_ex, pstruct_obj):
-    """STUB — ASOS iteration step with inputs."""
-    raise NotImplementedError("Step() (ASOS) source was not provided.")
-
-
-def Step_out(newparams_ex, in_struct):
-    """STUB — ASOS iteration step without inputs."""
-    raise NotImplementedError("Step_out() (ASOS) source was not provided.")
-
-
-def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
-    """
-    STUB — Kalman smoother.
-    Original MATLAB signature (no-input case):
-      [xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr]
-          = kalman_smoother(y, A, C, Q, R, initx, initV)
-    With inputs (keyword args B, D, u are passed):
-      [xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr]
-          = kalman_smoother(y, A, C, Q, R, initx, initV, 'B', B, 'D', D, 'u', u)
-    """
-    raise NotImplementedError("kalman_smoother() source was not provided.")
-
+# ---------------------------------------------------------------------------
+# Parameter struct builders
+# ---------------------------------------------------------------------------
 
 def pstruct(A, B, C, D, Q, R, initx, initV):
-    """STUB — Build parameter struct for ExactEstep."""
-    raise NotImplementedError("pstruct() source was not provided.")
+    """
+    Build parameter struct for ExactEstep (with control inputs).
+
+    Parameters
+    ----------
+    A, B, C, D : np.ndarray — system matrices
+    Q, R       : np.ndarray — noise covariances
+    initx      : np.ndarray (ss,) or (ss, 1) — initial state mean
+    initV      : np.ndarray (ss, ss)          — initial state covariance
+    """
+    return Struct(A=A, B=B, C=C, D=D, Q=Q, R=R,
+                  initx=np.atleast_1d(initx).ravel(),
+                  initV=initV)
 
 
 def pstruct_noinput(A, C, Q, R, initx, initV):
-    """STUB — Build parameter struct for ExactEstep_noinput."""
-    raise NotImplementedError("pstruct_noinput() source was not provided.")
+    """
+    Build parameter struct for ExactEstep_noinput (no control inputs).
+    """
+    return Struct(A=A, C=C, Q=Q, R=R,
+                  initx=np.atleast_1d(initx).ravel(),
+                  initV=initV)
+
+
+# ---------------------------------------------------------------------------
+# Kalman smoother (Kalman forward filter + RTS backward smoother)
+# ---------------------------------------------------------------------------
+
+def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
+    """
+    Kalman forward filter followed by Rauch-Tung-Striebel (RTS) backward
+    smoother for a linear dynamical system.
+
+    State model  : x_t = A x_{t-1} + B u_{t-1} + w,  w ~ N(0, Q)
+    Output model : y_t = C x_t     + D u_t     + v,  v ~ N(0, R)
+
+    Parameters
+    ----------
+    y      : np.ndarray (os, T) — observations
+    A      : np.ndarray (ss, ss)
+    C      : np.ndarray (os, ss)
+    Q      : np.ndarray (ss, ss) — process noise covariance
+    R      : np.ndarray (os, os) — observation noise covariance
+    initx  : np.ndarray (ss,) or (ss, 1) — prior mean of x_0
+    initV  : np.ndarray (ss, ss)          — prior covariance of x_0
+    **kwargs:
+        B : np.ndarray (ss, is) — input matrix (state equation)
+        D : np.ndarray (os, is) — feedthrough matrix (output equation)
+        u : np.ndarray (is, T)  — input sequence
+
+    Returns
+    -------
+    xsmooth       : np.ndarray (ss, T)
+    Vsmooth       : np.ndarray (ss, ss, T)
+    VVsmooth      : np.ndarray (ss, ss, T)   VVsmooth[:,:,t] = Cov(x_t, x_{t-1})
+    loglik        : float
+    perfect_loglik: float  — placeholder (0.0); TODO: ACCEPT AICS support
+    aici_bias_cr  : float  — placeholder (0.0); TODO: ACCEPT AICS support
+    """
+    B = kwargs.get('B', None)
+    D = kwargs.get('D', None)
+    u = kwargs.get('u', None)
+    has_input = (B is not None) and (u is not None)
+
+    os, T = y.shape
+    ss = A.shape[0]
+
+    initx = np.atleast_1d(initx).ravel()     # (ss,)
+    initV = np.atleast_2d(initV)             # (ss, ss)
+    I_ss  = np.eye(ss)
+    REG   = 1e-10 * np.eye(os)              # innovation cov regulariser
+
+    # ------------------------------------------------------------------
+    # Storage: forward filter
+    # ------------------------------------------------------------------
+    x_prior = np.zeros((ss, T))
+    V_prior = np.zeros((ss, ss, T))
+    x_filt  = np.zeros((ss, T))
+    V_filt  = np.zeros((ss, ss, T))
+
+    loglik = 0.0
+
+    for t in range(T):
+        # --- Prediction ---
+        if t == 0:
+            xp = initx.copy()
+            Vp = initV.copy()
+            if has_input:
+                # No u_{-1}; initx already encodes the prior on x_0.
+                pass
+        else:
+            xp = A @ x_filt[:, t - 1]
+            if has_input:
+                xp = xp + B @ u[:, t - 1]
+            Vp = A @ V_filt[:, :, t - 1] @ A.T + Q
+
+        x_prior[:, t]    = xp
+        V_prior[:, :, t] = Vp
+
+        # --- Innovation ---
+        innov = y[:, t] - C @ xp
+        if has_input and D is not None:
+            innov = innov - D @ u[:, t]
+
+        # --- Innovation covariance (regularised for stability) ---
+        S = C @ Vp @ C.T + R + REG
+
+        # Cholesky solve for numerical stability
+        try:
+            c_S, low = cho_factor(S, lower=True)
+            K        = cho_solve((c_S, low), C @ Vp.T).T   # Vp C' S^{-1}
+            innov_norm = float(
+                innov @ cho_solve((c_S, low), innov)
+            )
+            log_det_S = 2.0 * np.sum(np.log(np.abs(np.diag(c_S))))
+        except np.linalg.LinAlgError:
+            # Fallback to lstsq if Cholesky fails
+            K         = np.linalg.lstsq(S.T, (C @ Vp.T).T, rcond=None)[0].T
+            innov_norm = float(innov @ np.linalg.lstsq(S, innov, rcond=None)[0])
+            sign, log_det_S = np.linalg.slogdet(S)
+            if sign <= 0:
+                log_det_S = 0.0
+
+        # Log-likelihood contribution
+        loglik += -0.5 * (os * math.log(2.0 * math.pi) + log_det_S + innov_norm)
+
+        # --- Update (Joseph stabilised form) ---
+        ImKC = I_ss - K @ C
+        x_filt[:, t]    = xp + K @ innov
+        V_filt[:, :, t] = ImKC @ Vp @ ImKC.T + K @ R @ K.T
+
+    # ------------------------------------------------------------------
+    # Storage: backward smoother (RTS)
+    # ------------------------------------------------------------------
+    xsmooth  = np.zeros((ss, T))
+    Vsmooth  = np.zeros((ss, ss, T))
+    VVsmooth = np.zeros((ss, ss, T))   # VVsmooth[:,:,t] = Cov(x_t, x_{t-1})
+
+    xsmooth[:, -1]     = x_filt[:, -1]
+    Vsmooth[:, :, -1]  = V_filt[:, :, -1]
+
+    for t in range(T - 2, -1, -1):
+        Vp_next = V_prior[:, :, t + 1]
+        # J = V_filt @ A' @ inv(V_prior_{t+1})
+        J = np.linalg.lstsq(Vp_next.T, (A @ V_filt[:, :, t]).T, rcond=None)[0].T
+
+        xsmooth[:, t]    = (x_filt[:, t]
+                            + J @ (xsmooth[:, t + 1] - x_prior[:, t + 1]))
+        Vsmooth[:, :, t] = (V_filt[:, :, t]
+                            + J @ (Vsmooth[:, :, t + 1] - Vp_next) @ J.T)
+
+        # Lagged cross-covariance: Cov(x_{t+1}, x_t)
+        VVsmooth[:, :, t + 1] = J @ Vsmooth[:, :, t + 1]
+
+    # TODO: implement perfect_loglik and aici_bias_cr for full ACCEPT AICS support
+    perfect_loglik = 0.0
+    aici_bias_cr   = 0.0
+
+    return xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr
+
+
+# ---------------------------------------------------------------------------
+# Exact E-step wrappers (delegates to _estep / _estep_input)
+# ---------------------------------------------------------------------------
+
+def ExactEstep_noinput(y, pstruct_obj):
+    """
+    Exact E-step without control inputs.
+
+    Calls the Kalman smoother, accumulates sufficient statistics, and returns
+    them packaged in a Struct matching the field names consumed by the EM loop
+    in learn_kalman.
+
+    Parameters
+    ----------
+    y           : np.ndarray (os, T)
+    pstruct_obj : Struct built by pstruct_noinput(A, C, Q, R, initx, initV)
+
+    Returns
+    -------
+    expt     : Struct with fields:
+                 .Ex_x_1  (ss, ss)  — Σ x_t x_{t-1}'
+                 .Ex_x_0  (ss, ss)  — Σ x_t x_t'
+                 .Ey_x_0  (os, ss)  — Σ y_t x_t'
+                 .Ex_     (ss, T)   — smoothed state sequence
+                 .Exx_    Struct(.end, .start)  — endpoint outer products
+    loglik_t : float
+    err      : None
+    """
+    ps = pstruct_obj
+    (beta, gamma, delta, gamma1, gamma2,
+     x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t) = _estep(
+        y, ps.A, ps.C, ps.Q, ps.R,
+        ps.initx[:, None], ps.initV, ar_mode=False
+    )
+
+    expt = Struct(
+        Ex_x_1 = beta,                        # (ss, ss)
+        Ex_x_0 = gamma,                       # (ss, ss)
+        Ey_x_0 = delta,                       # (os, ss)
+        Ex_    = xsmooth,                     # (ss, T)
+        Exx_   = Struct(
+            end   = gamma - gamma1,           # Σ x_T x_T' + V_T  (end outer product)
+            start = gamma - gamma2            # Σ x_0 x_0' + V_0  (start outer product)
+        )
+    )
+    return expt, loglik_t, None
+
+
+def ExactEstep(y, u, pstruct_obj):
+    """
+    Exact E-step with control inputs.
+
+    Parameters
+    ----------
+    y           : np.ndarray (os, T)
+    u           : np.ndarray (is, T)
+    pstruct_obj : Struct built by pstruct(A, B, C, D, Q, R, initx, initV)
+
+    Returns
+    -------
+    expt     : Struct with fields as ExactEstep_noinput plus:
+                 .Eu_x_0  (is, ss) — Σ_{t=0}^{T-2} u_t x_t'
+                 .Ex_u_1  (ss, is) — Σ_{t=1}^{T-1} x_t u_{t-1}' (transposed psi)
+    loglik_t : float
+    err      : None
+    """
+    ps = pstruct_obj
+    (beta, gamma, delta, gamma1, gamma2,
+     xi, psi, x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t) = _estep_input(
+        y, u, ps.A, ps.B, ps.C, ps.D, ps.Q, ps.R,
+        ps.initx[:, None], ps.initV, ar_mode=False
+    )
+
+    expt = Struct(
+        Ex_x_1 = beta,
+        Ex_x_0 = gamma,
+        Ey_x_0 = delta,
+        Ex_    = xsmooth,
+        Exx_   = Struct(
+            end   = gamma - gamma1,
+            start = gamma - gamma2
+        ),
+        Eu_x_0 = xi,        # (is, ss)
+        Ex_u_1 = psi.T      # (ss, is) — note the transpose matches MATLAB convention
+    )
+    return expt, loglik_t, None
+
+
+# ---------------------------------------------------------------------------
+# ASOS stubs (deferred — not used by the current ACCEPT pipeline)
+# ---------------------------------------------------------------------------
+
+def ApproxEStep(y, u, klim, window, n_particles, is_dim, os_dim):
+    """STUB — Approximate E-step (ASOS mode). TODO: ASOS mode"""
+    raise NotImplementedError("ApproxEStep() — ASOS mode not yet implemented.")
+
+
+def Step(newparams_ex, pstruct_obj):
+    """STUB — ASOS iteration step with inputs. TODO: ASOS mode"""
+    raise NotImplementedError("Step() (ASOS) — not yet implemented.")
+
+
+def Step_out(newparams_ex, in_struct):
+    """STUB — ASOS iteration step without inputs. TODO: ASOS mode"""
+    raise NotImplementedError("Step_out() (ASOS) — not yet implemented.")
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +347,7 @@ def _estep(y, A, C, Q, R, initx, initV, ar_mode):
     x1 = xsmooth[:, 0]
     V1 = Vsmooth[:, :, 0]
 
-    return beta, gamma, delta, gamma1, gamma2, x1, V1, loglik, perfect_loglik, aici_bias_cr
+    return beta, gamma, delta, gamma1, gamma2, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr
 
 
 def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
@@ -196,7 +408,7 @@ def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
     x1 = xsmooth[:, 0]
     V1 = Vsmooth[:, :, 0]
 
-    return beta, gamma, delta, gamma1, gamma2, xi, psi, x1, V1, loglik, perfect_loglik, aici_bias_cr
+    return beta, gamma, delta, gamma1, gamma2, xi, psi, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +472,7 @@ def learn_kalman(
     C     = params.init.cd[:, :, np.newaxis].copy()       # (os, ss, 1)
     Q     = params.init.qwd[:, :, np.newaxis].copy()      # (ss, ss, 1)
     R     = params.init.rvd[:, :, np.newaxis].copy()      # (os, os, 1)
-    initx = params.init.initx0[:, np.newaxis].copy()      # (ss, 1)
+    initx = np.atleast_1d(params.init.initx0).ravel()[:, np.newaxis].copy()  # (ss, 1)
     initV = params.init.xssd[:, :, np.newaxis].copy()     # (ss, ss, 1)
 
     params.condQ = np.array([np.linalg.cond(Q[:, :, 0])])
