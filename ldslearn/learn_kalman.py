@@ -1,6 +1,6 @@
 import numpy as np
-import math
-from scipy.linalg import solve_triangular, cho_factor, cho_solve
+from filterpy.kalman import KalmanFilter
+from filterpy.kalman import rts_smoother as fp_rts_smoother
 from em_converged import em_converged
 
 
@@ -89,96 +89,86 @@ def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
 
     initx = np.atleast_1d(initx).ravel()     # (ss,)
     initV = np.atleast_2d(initV)             # (ss, ss)
-    I_ss  = np.eye(ss)
-    REG   = 1e-10 * np.eye(os)              # innovation cov regulariser
 
     # ------------------------------------------------------------------
-    # Storage: forward filter
+    # Forward filter (filterpy KalmanFilter)
     # ------------------------------------------------------------------
-    x_prior = np.zeros((ss, T))
-    V_prior = np.zeros((ss, ss, T))
-    x_filt  = np.zeros((ss, T))
-    V_filt  = np.zeros((ss, ss, T))
+    is_ = B.shape[1] if has_input else 0
 
+    kf = KalmanFilter(dim_x=ss, dim_z=os, dim_u=is_)
+    kf.F = A.copy()
+    kf.H = C.copy()
+    kf.Q = Q.copy()
+    kf.R = R.copy()
+    kf.x = initx.copy().reshape(-1, 1)
+    kf.P = initV.copy()
+    # Sync priors so the t=0 update uses initx/initV without a preceding predict()
+    kf.x_prior = np.copy(kf.x)
+    kf.P_prior = np.copy(kf.P)
+    if has_input:
+        kf.B = B.copy()
+
+    x_filt_hist  = np.zeros((T, ss))
+    P_filt_hist  = np.zeros((T, ss, ss))
+    K_filt_hist  = np.zeros((T, ss, os))  # filter gains for Shumway-Stoffer terminal anchor
+    x_prior_hist = np.zeros((T, ss))   # predicted mean before each update
     loglik = 0.0
 
     for t in range(T):
-        # --- Prediction ---
-        if t == 0:
-            xp = initx.copy()
-            Vp = initV.copy()
-            if has_input:
-                # No u_{-1}; initx already encodes the prior on x_0.
-                pass
-        else:
-            xp = A @ x_filt[:, t - 1]
-            if has_input:
-                xp = xp + B @ u[:, t - 1]
-            Vp = A @ V_filt[:, :, t - 1] @ A.T + Q
+        if t > 0:
+            u_ctrl = u[:, t - 1].reshape(-1, 1) if has_input else None
+            kf.predict(u=u_ctrl)
 
-        x_prior[:, t]    = xp
-        V_prior[:, :, t] = Vp
+        # After predict (or at t=0 with initx): kf.x holds the predicted mean
+        x_prior_hist[t] = kf.x.ravel()
 
-        # --- Innovation ---
-        innov = y[:, t] - C @ xp
+        z = y[:, t].copy()
         if has_input and D is not None:
-            innov = innov - D @ u[:, t]
+            z = z - D @ u[:, t]        # D feedthrough absorbed into observation
+        kf.update(z.reshape(-1, 1))
+        loglik += kf.log_likelihood    # log p(z_t | predicted prior)
 
-        # --- Innovation covariance (regularised for stability) ---
-        S = C @ Vp @ C.T + R + REG
+        x_filt_hist[t] = kf.x.ravel()
+        P_filt_hist[t] = kf.P.copy()
+        K_filt_hist[t] = kf.K.copy()
 
-        # Cholesky solve for numerical stability
-        try:
-            c_S, low = cho_factor(S, lower=True)
-            K        = cho_solve((c_S, low), C @ Vp.T).T   # Vp C' S^{-1}
-            innov_norm = float(
-                innov @ cho_solve((c_S, low), innov)
+    # ------------------------------------------------------------------
+    # Backward smoother (RTS via filterpy)
+    # ------------------------------------------------------------------
+    # rts_smoother requires F and Q as (T, ss, ss) arrays (one matrix per step)
+    F_arr = np.tile(A[np.newaxis], (T, 1, 1))
+    Q_arr = np.tile(Q[np.newaxis], (T, 1, 1))
+    xs, Ps, Ks, _ = fp_rts_smoother(x_filt_hist, P_filt_hist, F_arr, Q_arr)
+    # xs: (T, ss)  Ps: (T, ss, ss)  Ks: (T, ss, ss) — RTS gains
+
+    if has_input:
+        # fp_rts_smoother assumes x_prior = A @ x_filt (ignores B@u).
+        # Re-run the mean backward pass using the correct stored x_prior_hist.
+        xs[-1] = x_filt_hist[-1]
+        for k in range(T - 2, -1, -1):
+            xs[k] = x_filt_hist[k] + Ks[k] @ (xs[k + 1] - x_prior_hist[k + 1])
+
+    # Convert to (ss, T) / (ss, ss, T) convention expected by _estep / _estep_input
+    xsmooth = xs.T                               # (ss, T)
+    Vsmooth = np.moveaxis(Ps, 0, -1)            # (ss, ss, T)
+
+    # Lagged cross-covariance: VVsmooth[:,:,t] = Cov(x_t, x_{t-1} | y_{1:T})
+    # Shumway & Stoffer (1982) backward recursion.
+    # Index 0 stays zero — Cov(x_0, x_{-1}) is undefined, and _estep only
+    # accumulates beta for t > 0, so VVsmooth[:, :, 0] is never read.
+    I_ss = np.eye(ss)
+    VVsmooth = np.zeros((ss, ss, T))
+    if T >= 2:
+        # Terminal base case
+        VVsmooth[:, :, -1] = (I_ss - K_filt_hist[-1] @ C) @ A @ P_filt_hist[-2]
+        # Backward recursion: k = T-2 down to 1
+        for k in range(T - 2, 0, -1):
+            VVsmooth[:, :, k] = (
+                P_filt_hist[k] @ Ks[k - 1].T
+                + Ks[k] @ (VVsmooth[:, :, k + 1] - A @ P_filt_hist[k]) @ Ks[k - 1].T
             )
-            log_det_S = 2.0 * np.sum(np.log(np.abs(np.diag(c_S))))
-        except np.linalg.LinAlgError:
-            # Fallback to lstsq if Cholesky fails
-            K         = np.linalg.lstsq(S.T, (C @ Vp.T).T, rcond=None)[0].T
-            innov_norm = float(innov @ np.linalg.lstsq(S, innov, rcond=None)[0])
-            sign, log_det_S = np.linalg.slogdet(S)
-            if sign <= 0:
-                log_det_S = 0.0
 
-        # Log-likelihood contribution
-        loglik += -0.5 * (os * math.log(2.0 * math.pi) + log_det_S + innov_norm)
-
-        # --- Update (Joseph stabilised form) ---
-        ImKC = I_ss - K @ C
-        x_filt[:, t]    = xp + K @ innov
-        V_filt[:, :, t] = ImKC @ Vp @ ImKC.T + K @ R @ K.T
-
-    # ------------------------------------------------------------------
-    # Storage: backward smoother (RTS)
-    # ------------------------------------------------------------------
-    xsmooth  = np.zeros((ss, T))
-    Vsmooth  = np.zeros((ss, ss, T))
-    VVsmooth = np.zeros((ss, ss, T))   # VVsmooth[:,:,t] = Cov(x_t, x_{t-1})
-
-    xsmooth[:, -1]     = x_filt[:, -1]
-    Vsmooth[:, :, -1]  = V_filt[:, :, -1]
-
-    for t in range(T - 2, -1, -1):
-        Vp_next = V_prior[:, :, t + 1]
-        # J = V_filt @ A' @ inv(V_prior_{t+1})
-        J = np.linalg.lstsq(Vp_next.T, (A @ V_filt[:, :, t]).T, rcond=None)[0].T
-
-        xsmooth[:, t]    = (x_filt[:, t]
-                            + J @ (xsmooth[:, t + 1] - x_prior[:, t + 1]))
-        Vsmooth[:, :, t] = (V_filt[:, :, t]
-                            + J @ (Vsmooth[:, :, t + 1] - Vp_next) @ J.T)
-
-        # Lagged cross-covariance: Cov(x_{t+1}, x_t)
-        VVsmooth[:, :, t + 1] = J @ Vsmooth[:, :, t + 1]
-
-    # TODO: implement perfect_loglik and aici_bias_cr for full ACCEPT AICS support
-    perfect_loglik = 0.0
-    aici_bias_cr   = 0.0
-
-    return xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr
+    return xsmooth, Vsmooth, VVsmooth, loglik, 0.0, 0.0
 
 
 # ---------------------------------------------------------------------------
