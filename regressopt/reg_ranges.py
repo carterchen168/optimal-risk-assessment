@@ -76,19 +76,6 @@ def run():
     kernel_max = 1e5
     knn_max = sum(params.filelength)
 
-    tuneminrange = np.array([
-        kernel_min,   # gp
-        kernel_min,   # svr
-        kernel_min,   # libsvr
-        1,            # knn
-        1,            # btree
-        lin_min,      # lin
-        lin_min * 1e-3,  # quad
-        1,            # bnet
-        1,            # elm (placeholder, uses avg_thresh below)
-        getattr(params, 'avg_thresh', 0) / (lin_max * 10) if getattr(params, 'avg_thresh', None) else 0  # ransac
-    ])
-
     # Correct elm entry: MATLAB has ones(2,1) for bnet and elm, then avg_thresh/(lin_max*10)
     # Replicating exact MATLAB layout: [kernel_min*3; 1,1; lin_min,lin_min*1e-3; 1,1; avg_thresh/(lin_max*10)]
     avg_thresh = getattr(params, 'avg_thresh', 0) if getattr(params, 'avg_thresh', None) is not None else 0
