@@ -6,7 +6,7 @@ import pytest
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ACCEPT test runner",
+        description="ACCEPT Test Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
