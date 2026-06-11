@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accept-toolbox"
+description = "ACCEPT: Adverse Condition and Critical Event Prediction Toolbox"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "filterpy",
+    "joblib",
+    "pandas",
+    "cvxpy",
+    "sippy_unipi",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["regressopt*", "detectopt*", "ldslearn*", "stablelds*", "subfun*"]
