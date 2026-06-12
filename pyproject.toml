@@ -21,6 +21,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::sklearn.exceptions.ConvergenceWarning",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["regressopt*", "detectopt*", "ldslearn*", "stablelds*", "subfun*"]

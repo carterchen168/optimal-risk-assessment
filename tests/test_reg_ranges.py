@@ -1,3 +1,19 @@
+"""
+tests/test_reg_ranges.py
+--------------------------
+Pytest suite for regressopt/reg_ranges.py (run).
+
+Covers:
+  - Parameter mapping: 1-based algoIdx -> 0-based tuneparamtypes, tune shape (N, 3)
+  - Hyperparameter range contracts: kernel [1e-5, 1e5], linear/quad floors, integer [1, 500]
+  - Dynamic bounds: k-NN max tied to sum(filelength), RANSAC min from avg_thresh
+  - Fallback: filelength defaults to [1000] when nompath/nomflightpath/fcnpath absent
+  - Interactive dialogs: klim prompt trigger/suppression (detectionIdx 2/7, asos, klim preset),
+    manual override (flag==2) parse + cancel + malformed-input fallback
+  - Environment guardrail: working directory restored to ACCEPT_DIR after run
+  - Nominal path scanning: filelength from shape, len() fallback, ImportError warning + fallback
+"""
+
 import os
 import sys
 import numpy as np
@@ -25,7 +41,8 @@ def setup_mock_params():
     mock_user_input.params.avg_thresh = 0.0
     mock_user_input.params.regress = MagicMock()
     mock_user_input.params.regress.flag = 0  # Default to no manual intervention dialog
-    yield
+    with patch.object(reg_ranges, 'user_input', mock_user_input):
+        yield
 
 
 # ---------------------------------------------------------------------------
