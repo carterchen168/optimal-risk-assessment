@@ -71,7 +71,8 @@ def modelopttest(x: float, params, algIdx: int, tr, tst) -> float:
 
         residuals = y_true - y_pred
 
-        if len(residuals) == 0 or np.any(np.isnan(residuals)):
+        residuals = np.atleast_1d(residuals)
+        if np.size(residuals) == 0 or np.any(np.isnan(residuals)):
             print(f"Warning: NaNs found in predictions during cross-validation fold {i+1}")
 
         sse = np.sum(residuals ** 2)

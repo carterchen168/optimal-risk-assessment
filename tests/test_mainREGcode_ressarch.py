@@ -24,7 +24,7 @@ import pytest
 from sklearn.metrics import r2_score
 
 # ---------------------------------------------------------------------------
-# Module isolation (AGENTS.md 6.1, 6.2)
+# Module isolation
 # mainREGcode_ressarch imports from regressopt.elm, which triggers
 # regressopt/__init__.py → reg_ranges → user_input_ressarch at load time.
 # ---------------------------------------------------------------------------
@@ -50,12 +50,12 @@ class Struct:
 
 
 def _make_data(n=15, n_features=2, seed=0):
-    """Single-batch training and test data using fixed-seed RNG (AGENTS.md 6.3)."""
+    """Single-batch training and test data using fixed-seed RNG."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((n, n_features))
     y = rng.standard_normal(n)
     tr = Struct(x=x, y=y)
-    tst = Struct(x=[x], y=[y])  # batched list contract (AGENTS.md 5.3)
+    tst = Struct(x=[x], y=[y])  # batched list contract
     return tr, tst
 
 
@@ -210,8 +210,7 @@ class TestModelCaching:
     Cached algos store their fitted estimator on runOptions after the first
     call and reuse it (without refitting) on subsequent calls.  KNN has no
     cache guard in the source — confirmed by checking runOptions carries no
-    modelknn attribute after execution (AGENTS.md 5.10.1 notes modelknn but
-    the implemented code does not cache KNN).
+    modelknn attribute after execution.
     """
 
     def test_gp_model_stored_after_fit(self):
@@ -381,8 +380,8 @@ def _run_accuracy(algo, hyperparam, relationship='linear', n_train=120, n_test=4
     """
     Fit on synthetic data with a known relationship; return R² on held-out test set.
 
-    X is standard-normal (Z-scored) to match the AGENTS.md §5.4 contract: in
-    production mainREGcode_ressarch always receives pre-scaled arrays from
+    X is standard-normal (Z-scored): in production 
+    mainREGcode_ressarch always receives pre-scaled arrays from
     GlobalDataScaler, so synthetic inputs must reflect that same distribution.
     """
     rng = np.random.default_rng(seed)
@@ -414,8 +413,7 @@ class TestAlgorithmAccuracy:
     per-algorithm minimum — confirming that the fit → predict path learns the signal
     rather than just returning the correct output shape.
 
-    Data is Z-scored (standard-normal features) per the AGENTS.md §5.4 gatekeeper
-    contract.  Thresholds are calibrated to expected algorithm behavior on the given
+    Data is Z-scored (standard-normal features).  Thresholds are calibrated to expected algorithm behavior on the given
     relationship type; kernel/ensemble/NN methods are given more headroom than the
     closed-form linear models.
     """

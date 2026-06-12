@@ -5,7 +5,7 @@ from em_converged import em_converged
 
 
 # ---------------------------------------------------------------------------
-# Lightweight Struct (mirrors MATLAB dot-notation structs per AGENTS.md §3)
+# Lightweight Struct (mirrors MATLAB dot-notation structs)
 # ---------------------------------------------------------------------------
 
 class Struct:

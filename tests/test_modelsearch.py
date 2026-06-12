@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
-# Module isolation (AGENTS.md 6.1, 6.2)
+# Module isolation
 # ---------------------------------------------------------------------------
 
 sys.modules.setdefault('user_input_ressarch', MagicMock())
