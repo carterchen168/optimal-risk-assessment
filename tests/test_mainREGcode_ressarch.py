@@ -267,7 +267,44 @@ class TestModelCaching:
 
 
 # ---------------------------------------------------------------------------
-# 4. Multi-batch
+# 4. GP scale guard (MATLAB parity: gp_pnt caps training size)
+# ---------------------------------------------------------------------------
+
+class TestGPScaleGuard:
+    """GP branch respects gp_pnt and does not train on more than gp_pnt samples."""
+
+    def test_gp_subsamples_when_n_exceeds_gp_pnt(self):
+        """With gp_pnt=10 and N=50, GP model trains on ≤10 points."""
+        rng = np.random.default_rng(7)
+        x = rng.standard_normal((50, 2))
+        y = rng.standard_normal(50)
+        tr = Struct(x=x, y=y)
+        tst = Struct(x=[x[:10]], y=[y[:10]])
+        opts = _make_opts(gp_pnt=10)
+        mainREGcode_ressarch(1.0, tr, tst, ['gp'], opts)
+        assert opts.modelGP.X_train_.shape[0] <= 10
+
+    def test_gp_trains_full_set_when_n_leq_gp_pnt(self):
+        """With N=15 and default gp_pnt=500, GP uses all 15 points."""
+        tr, tst = _make_data(n=15)
+        opts = _make_opts()
+        mainREGcode_ressarch(1.0, tr, tst, ['gp'], opts)
+        assert opts.modelGP.X_train_.shape[0] == 15
+
+    def test_gp_default_gp_pnt_is_500(self):
+        """Without gp_pnt on runOptions, cap defaults to 500 (MATLAB parity)."""
+        rng = np.random.default_rng(8)
+        x = rng.standard_normal((600, 2))
+        y = rng.standard_normal(600)
+        tr = Struct(x=x, y=y)
+        tst = Struct(x=[x[:10]], y=[y[:10]])
+        opts = _make_opts()
+        mainREGcode_ressarch(1.0, tr, tst, ['gp'], opts)
+        assert opts.modelGP.X_train_.shape[0] == 500
+
+
+# ---------------------------------------------------------------------------
+# 5. Multi-batch
 # ---------------------------------------------------------------------------
 
 class TestMultiBatch:
@@ -304,7 +341,7 @@ class TestMultiBatch:
 
 
 # ---------------------------------------------------------------------------
-# 5. ELM config from runOptions
+# 6. ELM config from runOptions
 # ---------------------------------------------------------------------------
 
 class TestELMConfig:
@@ -336,7 +373,7 @@ class TestELMConfig:
 
 
 # ---------------------------------------------------------------------------
-# 6. Algorithm accuracy
+# 7. Algorithm accuracy
 # ---------------------------------------------------------------------------
 
 def _run_accuracy(algo, hyperparam, relationship='linear', n_train=120, n_test=40,

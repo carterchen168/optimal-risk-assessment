@@ -51,10 +51,21 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             # 1. Gaussian Process
             if algo_idx == 1:
                 if not hasattr(runOptions, 'modelGP'):
-                    # Using default RBF kernel for GP; 'x' could scale the kernel bounds
+                    # MATLAB parity: gp_pnt caps the GP training set (default 500, from aux_input.m).
+                    # Exact GP is O(N^3); subsampling is required for production-scale N.
+                    gp_pnt = int(getattr(runOptions, 'gp_pnt', 500))
+                    N = len(tr.y)
+                    if N > gp_pnt:
+                        rng = np.random.default_rng(0)
+                        idx = rng.choice(N, gp_pnt, replace=False)
+                        tr_x_gp = tr.x[idx]
+                        tr_y_gp = tr.y[idx]
+                    else:
+                        tr_x_gp = tr.x
+                        tr_y_gp = tr.y
                     model = GaussianProcessRegressor(random_state=0)
                     t0 = time.time()
-                    model.fit(tr.x, tr.y)
+                    model.fit(tr_x_gp, tr_y_gp)
                     output.gpTrainTime = time.time() - t0
                     runOptions.modelGP = model
                 else:
