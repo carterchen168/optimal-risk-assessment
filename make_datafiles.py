@@ -81,6 +81,7 @@ def make_datafiles(params, sev):
         
         svr = SVR(kernel='rbf')
         
+        # NOTE: Be cautious with n_jobs=-1 using all cores; adjust as needed for performance
         # RandomizedSearchCV handles the parallelization automatically using n_jobs=-1
         random_search = RandomizedSearchCV(
             svr, param_distributions=param_grid, n_iter=20, 

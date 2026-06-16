@@ -135,7 +135,7 @@ if resflag:
     if hasattr(params, 'regress') and getattr(params.regress, 'flag', 0) == 1:
         if hasattr(modelselectdata, 'hyp_param'):
             import plotregressresults
-            plotregressresults.run()
+            plotregressresults.run(params, modelselectdata)
             
     if not hasattr(params, 'regressonly') or not params.regressonly:
         import plotdetectresults

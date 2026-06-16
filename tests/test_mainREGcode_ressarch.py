@@ -459,8 +459,8 @@ class TestAlgorithmAccuracy:
         assert _run_accuracy('btree', 2.0) > 0.80
 
     def test_svr_recovers_linear_signal(self):
-        """SVR (RBF kernel, C=1) on linear data — kernel method recovers linear trend."""
-        assert _run_accuracy('svr', 1.0) > 0.75
+        """SVR (RBF kernel, gamma=0.5, C=1) on linear data — kernel method recovers linear trend."""
+        assert _run_accuracy('svr', 0.5) > 0.75
 
     def test_libsvr_recovers_linear_signal(self):
         """NuSVR (nu=0.4, RBF) on linear data — looser threshold than plain SVR."""

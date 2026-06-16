@@ -49,7 +49,7 @@ def extract_accept_metadata(config_data, config_idx, config_files, params):
             cont = 'Yes'
         else:
             # Replicate listdlg: Ask user to pick a new configuration
-            # Note: simpledialog is basic; for a true dropdown list, you'd build a custom tk.Toplevel window.
+            # NOTE: simpledialog is basic; for a true dropdown list, you'd build a custom tk.Toplevel window.
             file_list = "\n".join([f"{i}: {f}" for i, f in enumerate(config_files)])
             choice = simpledialog.askinteger(
                 "Pick Configuration", 

@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 from regressopt import mainREGcode_ressarch
 
@@ -12,7 +13,18 @@ def modelopttest(x: float, params, algIdx: int, tr, tst) -> float:
     Evaluates a hyperparameter tuning value (x) using K-Fold Cross Validation.
     Matches the data-splicing and normalization logic of the original MATLAB modelopttest.m.
     """
-    nrmse = 0.0
+    # For SVR 3D optimization, x arrives as [sigma, C, epsilon].
+    # Unpack and store C/epsilon back into a params copy so mainREGcode reads them.
+    x_arr = np.atleast_1d(x).ravel()
+    algo_name = params.algo[algIdx]
+    if algo_name == 'svr' and len(x_arr) == 3:
+        params = copy.copy(params)
+        params.C       = float(x_arr[1])
+        params.epsilon = float(x_arr[2])
+        x = float(x_arr[0])
+    else:
+        x = float(x_arr[0])  # scipy optimizers pass arrays; normalize to scalar
+    nmse = 0.0
 
     # Extract the full continuous array from the batch wrapper
     full_x = tst.x[0]
@@ -60,10 +72,14 @@ def modelopttest(x: float, params, algIdx: int, tr, tst) -> float:
         tstpart.y = [full_y[test_mask]]
 
         # 3. Call the Execution Engine
-        # We must wrap the algorithm string in a list so mainREGcode parses it correctly
         algo_list = [params.algo[algIdx]]
-        
-        output, _ = mainREGcode_ressarch(x, trpart, tstpart, algo_list, params)
+        run_opts = Struct()
+        if algo_name == 'svr':
+            if hasattr(params, 'C'):
+                run_opts.C = params.C
+            if hasattr(params, 'epsilon'):
+                run_opts.epsilon = params.epsilon
+        output, _ = mainREGcode_ressarch(x, trpart, tstpart, algo_list, run_opts)
 
         # Calculate Sum of Squared Errors for this fold
         y_true = np.squeeze(tstpart.y[0])
@@ -76,7 +92,7 @@ def modelopttest(x: float, params, algIdx: int, tr, tst) -> float:
             print(f"Warning: NaNs found in predictions during cross-validation fold {i+1}")
 
         sse = np.sum(residuals ** 2)
-        nrmse += sse
+        nmse += sse
 
     # 4. Error Normalization
     # Replicating MATLAB's denominator: ((sum(filelength) - length(filelength)) * var(tst))
@@ -94,6 +110,6 @@ def modelopttest(x: float, params, algIdx: int, tr, tst) -> float:
         return float('inf')
 
     # Return the normalized error score
-    out = nrmse / (degrees_of_freedom * variance)
+    out = nmse / (degrees_of_freedom * variance)
     
     return out

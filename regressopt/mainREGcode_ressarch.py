@@ -1,5 +1,7 @@
 import time
+import warnings
 import numpy as np
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.svm import SVR, NuSVR
 from sklearn.neighbors import KNeighborsRegressor
@@ -78,9 +80,13 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             # 2. Support Vector Regression (SVR)
             elif algo_idx == 2:
                 if not hasattr(runOptions, 'modelSVR'):
-                    # 'x' maps to C (regularization) or gamma. Let's map it to C.
-                    c_val = x if x > 0 else 1e-4
-                    model = SVR(C=c_val, kernel='rbf')
+                    # x = sigma (RBF kernel bandwidth/gamma), matching MATLAB ACCEPT parity.
+                    # C and epsilon are pre-estimated in make_datafiles and stored in params
+                    # (which is passed as runOptions in the full pipeline).
+                    gamma_val = float(x) if float(x) > 0 else 1e-10
+                    c_val = float(getattr(runOptions, 'C', 1.0))
+                    eps_val = float(getattr(runOptions, 'epsilon', 0.1))
+                    model = SVR(C=c_val, gamma=gamma_val, epsilon=eps_val, kernel='rbf')
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.svrTrainTime = time.time() - t0
@@ -96,9 +102,11 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
             elif algo_idx == 3:
                 if not hasattr(runOptions, 'modelLibSVR'):
                     # Matches legacy MATLAB buildLSVR.m: Nu-SVR, RBF kernel, nu=0.4, C=x
-                    model = NuSVR(C=x, nu=0.4, kernel='rbf')
+                    model = NuSVR(C=x, nu=0.4, kernel='rbf', max_iter=1000)
                     t0 = time.time()
-                    model.fit(tr.x, tr.y)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore', ConvergenceWarning)
+                        model.fit(tr.x, tr.y)
                     output.lsvmTrainTime = time.time() - t0
                     runOptions.modelLibSVR = model
                 else:
@@ -191,9 +199,12 @@ def mainREGcode_ressarch(x: float, tr, tst, algo_list: list, runOptions) -> tupl
                     base_nn = MLPRegressor(
                         hidden_layer_sizes=hidden_layer_sizes,
                         activation=activation,
-                        max_iter=500,
+                        max_iter=2000,
                     )
-                    model = BaggingRegressor(estimator=base_nn, n_estimators=10, random_state=0)
+                    # NOTE: n_jobs: set via runOptions.bnet_n_jobs or default 4 (M2 performance cores).
+                    # Use -1 for all cores or tune per machine.
+                    n_jobs = int(getattr(runOptions, 'bnet_n_jobs', 4))
+                    model = BaggingRegressor(estimator=base_nn, n_estimators=10, random_state=0, n_jobs=n_jobs)
                     t0 = time.time()
                     model.fit(tr.x, tr.y)
                     output.bagTrainTime = time.time() - t0

@@ -59,6 +59,7 @@ def run(params: Any) -> Tuple[Any, List]:
 
     # 2. Transform validation data — no re-fit
     vld.x, vld.y = scaler.transform_evaluation_data(vld.x, vld.y)
+    model_select_data.vld_y = vld.y
 
     # 3. Transform mode-3 training data (same source as tr; transform-only)
     train.x, train.y = scaler.transform_evaluation_data(train.x, train.y)
@@ -74,6 +75,44 @@ def run(params: Any) -> Tuple[Any, List]:
     trtest.x = [tr.x]
     trtest.y = [tr.y]
     # ─────────────────────────────────────────────────────────────────────────
+
+    # SVR Phase 1 pre-optimization (MATLAB parity: make_datafiles.m lines 98-254).
+    # Must run on z-scored data — placed here after the scaling block.
+    # Estimates C and epsilon from training residuals, then does a 1-D sigma grid
+    # search (and 3-D refinement if NMSE > 0.5). Stores results in params so
+    # mainREGcode_ressarch and modelopttest read them via runOptions.
+    if hasattr(params, 'algo') and 'svr' in list(params.algo) and tr.x.size > 0:
+        # Step 1: estimate residual variance via polynomial regression up to degree 20
+        _reg = tr.x.copy().astype(float)
+        for _j in range(1, 21):
+            _reg = np.hstack([_reg, tr.x ** _j])
+        _lp, _, _, _ = np.linalg.lstsq(_reg, tr.y, rcond=None)
+        _resid = _reg @ _lp - tr.y
+        _varest = float((_resid @ _resid) / max(len(tr.y) - 21, 1))
+
+        _N = len(tr.y)
+        params.C = float(max(
+            abs(float(np.mean(tr.y)) + 3 * np.sqrt(_varest)),
+            abs(float(np.mean(tr.y)) - 3 * np.sqrt(_varest)),
+        ))
+        params.epsilon = float(3 * np.sqrt(_varest * np.log(_N) / _N))
+        # sigma from scaled feature ranges (z-scored data)
+        _ranges = tr.x.max(axis=0) - tr.x.min(axis=0)
+        params.sigma = float((float(np.mean(_ranges * 0.3))) ** (1.0 / tr.x.shape[1]))
+
+        # Step 2: 1-D grid search over sigma (100 log-spaced points)
+        _svr_idx = list(params.algo).index('svr')
+        _hp = np.logspace(-10, 10, 100)
+        _jmse = [modelopttest(float(_s), params, _svr_idx, tr, trtest) for _s in _hp]
+        params.sigma = float(_hp[int(np.argmin(_jmse))])
+
+        # Step 3: 3-D refinement over [sigma, C, epsilon] if NMSE still poor
+        if float(min(_jmse)) > 0.5:
+            _x0 = np.array([params.sigma, params.C, params.epsilon])
+            _x_opt, _, _, _ = optimsearch(_x0, params, tr, trtest, _svr_idx)
+            params.sigma   = float(_x_opt[0])
+            params.C       = float(_x_opt[1])
+            params.epsilon = float(_x_opt[2])
 
     model_select_data.rawdata_val = rawdata_val
     model_select_data.rawdata_tst = rawdata_tst
@@ -451,7 +490,7 @@ def make_datafiles(params: Any, mode: int) -> Tuple:
         samples=len(tr_y)
     )
     
-    if mode == 2: 
+    if mode == 2:
         print("Loading validation data...")
         val_data, _ = load_data_from_path(getattr(params, 'valpath', ''))
         rawdata_val = val_data.copy()
