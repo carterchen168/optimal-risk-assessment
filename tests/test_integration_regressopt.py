@@ -3,6 +3,9 @@ tests/test_integration_regressopt.py
 -------------------------------------
 Phase 1 integration test for the regressopt toolbox on the Boston Housing dataset.
 
+Lower level than test_integration_testoptloop_run.py: this test calls individual modules 
+directly (make_datafiles, modelsearch, mainREGcode_ressarch) instead of the orchestrator testoptloop_ressarch.run().
+
 Pipeline under test (production path):
   make_datafiles → GlobalDataScaler → modelsearch → mainREGcode_ressarch
   All 10 algorithms, optIdx=6 (L-BFGS-B, matches MATLAB fmincon default).

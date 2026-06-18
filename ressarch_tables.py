@@ -67,7 +67,7 @@ def ressarch_tables(
         (each a 1-D or 2-D numpy array, shape = [n_detectors, n_algos]).
     """
     try:
-        train, test, train_cell, rawdata_tst, rawdata_tr = make_datafiles(params, 3)
+        train, test, train_cell, rawdata_tst, rawdata_tr, *_ = make_datafiles(params, 3)
     except NotImplementedError as exc:
         print(f"[WARNING] {exc}\nContinuing without datafiles.")
 

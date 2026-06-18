@@ -9,6 +9,8 @@ from regressopt import mainREGcode_ressarch, modelopttest, optimsearch, GlobalDa
 from detectopt import truthdata, leveltune, detectioncall
 from ldslearn.lds_timeseries import lds_timeseries
 
+from make_datafiles import make_datafiles
+
 class Struct:
     """A lightweight class to replicate MATLAB struct dot-notation behavior."""
     def __init__(self, **kwargs):
@@ -19,6 +21,13 @@ def run(params: Any) -> Tuple[Any, List]:
     """
     Convert of MATLAB testoptloop_ressarch.m to Python.
     Renamed to 'run' to match the call from ressarch.py.
+
+    If params.regressonly is True, Phase 2/3 (detectopt truthdata/leveltune/
+    detectioncall, ldslearn LDS training) are skipped for every algo in
+    params.tune: only the Phase 1 regression train/val/test outputs are
+    computed. model_select_data.regressonly_skip is set to True and
+    model_select_data.regressonly_skip_reason explains why. rocarea will be
+    [] in that case, since no detection results are produced.
     """
     detection_types = [
         'Redline - Training', 
@@ -76,44 +85,6 @@ def run(params: Any) -> Tuple[Any, List]:
     trtest.y = [tr.y]
     # ─────────────────────────────────────────────────────────────────────────
 
-    # SVR Phase 1 pre-optimization (MATLAB parity: make_datafiles.m lines 98-254).
-    # Must run on z-scored data — placed here after the scaling block.
-    # Estimates C and epsilon from training residuals, then does a 1-D sigma grid
-    # search (and 3-D refinement if NMSE > 0.5). Stores results in params so
-    # mainREGcode_ressarch and modelopttest read them via runOptions.
-    if hasattr(params, 'algo') and 'svr' in list(params.algo) and tr.x.size > 0:
-        # Step 1: estimate residual variance via polynomial regression up to degree 20
-        _reg = tr.x.copy().astype(float)
-        for _j in range(1, 21):
-            _reg = np.hstack([_reg, tr.x ** _j])
-        _lp, _, _, _ = np.linalg.lstsq(_reg, tr.y, rcond=None)
-        _resid = _reg @ _lp - tr.y
-        _varest = float((_resid @ _resid) / max(len(tr.y) - 21, 1))
-
-        _N = len(tr.y)
-        params.C = float(max(
-            abs(float(np.mean(tr.y)) + 3 * np.sqrt(_varest)),
-            abs(float(np.mean(tr.y)) - 3 * np.sqrt(_varest)),
-        ))
-        params.epsilon = float(3 * np.sqrt(_varest * np.log(_N) / _N))
-        # sigma from scaled feature ranges (z-scored data)
-        _ranges = tr.x.max(axis=0) - tr.x.min(axis=0)
-        params.sigma = float((float(np.mean(_ranges * 0.3))) ** (1.0 / tr.x.shape[1]))
-
-        # Step 2: 1-D grid search over sigma (100 log-spaced points)
-        _svr_idx = list(params.algo).index('svr')
-        _hp = np.logspace(-10, 10, 100)
-        _jmse = [modelopttest(float(_s), params, _svr_idx, tr, trtest) for _s in _hp]
-        params.sigma = float(_hp[int(np.argmin(_jmse))])
-
-        # Step 3: 3-D refinement over [sigma, C, epsilon] if NMSE still poor
-        if float(min(_jmse)) > 0.5:
-            _x0 = np.array([params.sigma, params.C, params.epsilon])
-            _x_opt, _, _, _ = optimsearch(_x0, params, tr, trtest, _svr_idx)
-            params.sigma   = float(_x_opt[0])
-            params.C       = float(_x_opt[1])
-            params.epsilon = float(_x_opt[2])
-
     model_select_data.rawdata_val = rawdata_val
     model_select_data.rawdata_tst = rawdata_tst
     
@@ -121,13 +92,16 @@ def run(params: Any) -> Tuple[Any, List]:
     
     # ismember equivalent - find location of params.detect in detection_types
     loc = []
-    detect_list = params.detect if isinstance(params.detect, list) else [params.detect]
+    detect_attr = getattr(params, 'detect', [])
+    detect_list = detect_attr if isinstance(detect_attr, list) else [detect_attr]
     for detect in detect_list:
         if detect in detection_types:
             loc.append(detection_types.index(detect) + 1)  # MATLAB uses 1-based indexing
         else:
             loc.append(-1)
     
+    rocarea = []
+
     # Main loop over tune parameters
     for i in range(len(params.tune)):
         t_start = time.time()
@@ -240,39 +214,59 @@ def run(params: Any) -> Tuple[Any, List]:
             model_select_data.obstrain[i] = obstrain
         
         # Validation phase
-        params.Ntests = len(vld.y)
-        output_val, params = mainREGcode_ressarch(model_select_data.tuneval[i], tr, vld, 
+        # Ntests=1: vld.x/vld.y is one full 2D batch, not per-sample batches
+        # like train_cell (matches how mainREGcode_ressarch indexes tst.x[ik]
+        # expecting a 2D array per batch).
+        params.Ntests = 1
+        vld_batched = Struct(x=[vld.x], y=[vld.y])
+        output_val, params = mainREGcode_ressarch(model_select_data.tuneval[i], tr, vld_batched,
                                                  [params.algo[i]], params)
-        yval_predicted = output_val.yhat
-        
-        if hasattr(params, 's2flightpath'):
-            os.chdir(params.s2flightpath)
-            os.chdir('..')
-        else:
-            os.chdir(getattr(params, 'fcnpath', '.'))
-        
-        dstepvals = np.arange(params.dstepmin, params.dstepmax + 1)
-        
+        yval_predicted = output_val.yhat[0]
+
         if not hasattr(model_select_data, 'output_val'):
             model_select_data.output_val = []
         if i >= len(model_select_data.output_val):
             model_select_data.output_val.append(output_val)
         else:
             model_select_data.output_val[i] = output_val
-        
+
         # Testing phase
-        params.Ntests = len(test.y)
-        output_tst, params = mainREGcode_ressarch(model_select_data.tuneval[i], train, test, 
+        params.Ntests = 1
+        test_batched = Struct(x=[test.x], y=[test.y])
+        output_tst, params = mainREGcode_ressarch(model_select_data.tuneval[i], train, test_batched,
                              [params.algo[i]], params)
-        ytest_predicted = output_tst.yhat
-        
+        ytest_predicted = output_tst.yhat[0]
+
         if not hasattr(model_select_data, 'output_tst'):
             model_select_data.output_tst = []
         if i >= len(model_select_data.output_tst):
             model_select_data.output_tst.append(output_tst)
         else:
             model_select_data.output_tst[i] = output_tst
-        
+
+        # Phase 1 (regression train/val/test) is complete at this point.
+        # regressonly skips Phase 2/3 (detection/LDS) entirely, before any
+        # of their setup (chdir, dstepvals) runs.
+        if getattr(params, 'regressonly', False):
+            reason = (
+                "params.regressonly=True: skipped Phase 2/3 (detectopt "
+                "truthdata/leveltune/detectioncall, ldslearn LDS training) — "
+                "only Phase 1 regression (train/val/test mainREGcode_ressarch "
+                "outputs) was computed."
+            )
+            print(f"[testoptloop_ressarch.run] algo={params.algo[i]}: {reason}")
+            model_select_data.regressonly_skip = True
+            model_select_data.regressonly_skip_reason = reason
+            continue
+
+        if hasattr(params, 's2flightpath'):
+            os.chdir(params.s2flightpath)
+            os.chdir('..')
+        else:
+            os.chdir(getattr(params, 'fcnpath', '.'))
+
+        dstepvals = np.arange(params.dstepmin, params.dstepmax + 1)
+
         # Calculate observation metrics for different detection steps
         obsval = {}
         obstest = {}
@@ -425,100 +419,6 @@ def run(params: Any) -> Tuple[Any, List]:
     
     return model_select_data, rocarea
 
-
-# Placeholder functions updated to use and return Struct objects
-def make_datafiles(params: Any, mode: int) -> Tuple:
-    def load_data_from_path(path: str) -> Tuple[np.ndarray, List[str]]:
-        if not os.path.isdir(path):
-            return np.array([]), []
-        data_list = []
-        csv_files = glob.glob(os.path.join(path, '*.csv'))
-        for csv_file in csv_files:
-            df = pd.read_csv(csv_file)
-            data_list.append(df.values)
-        mat_files = glob.glob(os.path.join(path, '*.mat'))
-        for mat_file in mat_files:
-            try:
-                mat_data = sio.loadmat(mat_file, struct_as_record=False, squeeze_me=True)
-                for key in mat_data.keys():
-                    if not key.startswith('__') and isinstance(mat_data[key], np.ndarray):
-                        if mat_data[key].ndim == 2:
-                            data_list.append(mat_data[key])
-            except Exception as e:
-                print(f"Warning: Could not load {mat_file}: {e}")
-        concatenated = np.vstack(data_list) if data_list else np.array([])
-        return concatenated, []
-    
-    print("Loading training data...")
-    train_data, _ = load_data_from_path(getattr(params, 'nompath', ''))
-    rawdata_tr = train_data.copy()
-    
-    header = getattr(params, 'header', [])
-    target_name = getattr(params, 'targetName', '')
-    target_idx = 0
-    if target_name and header:
-        try:
-            target_idx = header.index(target_name)
-        except ValueError:
-            target_idx = 0 
-    
-    feature_indices = getattr(params, 'channelContineous', list(range(len(header))))
-    
-    if train_data.size > 0:
-        tr_y = train_data[:, target_idx] if target_idx < train_data.shape[1] else np.zeros(len(train_data))
-        tr_x = train_data[:, feature_indices] if feature_indices else train_data
-    else:
-        tr_x = np.array([])
-        tr_y = np.array([])
-    
-    train_cell = Struct(
-        x=[tr_x[i:i+1, :] for i in range(len(tr_y))] if len(tr_y) > 0 else [],
-        y=[np.array([tr_y[i]]) for i in range(len(tr_y))] if len(tr_y) > 0 else []
-    )
-    
-    tr = Struct(
-        x=tr_x,
-        y=tr_y,
-        header=[header[i] for i in feature_indices] if header else []
-    )
-    
-    Statistics = Struct(
-        mean=np.mean(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
-        std=np.std(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
-        min=np.min(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
-        max=np.max(tr_x, axis=0) if tr_x.size > 0 else np.array([]),
-        samples=len(tr_y)
-    )
-    
-    if mode == 2:
-        print("Loading validation data...")
-        val_data, _ = load_data_from_path(getattr(params, 'valpath', ''))
-        rawdata_val = val_data.copy()
-        
-        if val_data.size > 0:
-            val_y = val_data[:, target_idx] if target_idx < val_data.shape[1] else np.zeros(len(val_data))
-            val_x = val_data[:, feature_indices] if feature_indices else val_data
-        else:
-            val_x = np.array([])
-            val_y = np.array([])
-        
-        vld = Struct(x=val_x, y=val_y, header=tr.header)
-        return tr, vld, train_cell, rawdata_val, rawdata_tr, params, Statistics, feature_indices, np.arange(train_data.shape[1]) if train_data.size > 0 else np.array([])
-        
-    else:
-        print("Loading test data...")
-        test_data, _ = load_data_from_path(getattr(params, 'testpath', ''))
-        rawdata_tst = test_data.copy()
-        
-        if test_data.size > 0:
-            test_y = test_data[:, target_idx] if target_idx < test_data.shape[1] else np.zeros(len(test_data))
-            test_x = test_data[:, feature_indices] if feature_indices else test_data
-        else:
-            test_x = np.array([])
-            test_y = np.array([])
-        
-        test = Struct(x=test_x, y=test_y, header=tr.header)
-        return tr, test, train_cell, rawdata_tst, rawdata_tr, params, Statistics, feature_indices, np.arange(train_data.shape[1]) if train_data.size > 0 else np.array([])
 
 def modelsearch(tune_val: float, params: Any, tr: Any, trtest: Any, i: int) -> Tuple[float, float, Any]:
     x0 = np.array([tune_val])

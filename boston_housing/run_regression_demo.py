@@ -43,14 +43,7 @@ for _name in ['detectopt', 'detectopt.truthdata', 'detectopt.leveltune',
 # Imports
 # ---------------------------------------------------------------------------
 
-_spec = importlib.util.spec_from_file_location(
-    'testoptloop_ressarch',
-    os.path.join(_ROOT, 'testoptloop_ressarch.py'),
-)
-_tol_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_tol_mod)
-make_datafiles = _tol_mod.make_datafiles
-Struct = _tol_mod.Struct
+from make_datafiles import make_datafiles, Struct
 
 from regressopt.preprocessing import GlobalDataScaler
 from regressopt.mainREGcode_ressarch import mainREGcode_ressarch
