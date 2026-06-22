@@ -11,8 +11,8 @@ def main():
         epilog=(
             "Examples:\n"
             "python run_tests.py\n"
-            "python run_tests.py tests/test_reg_ranges.py\n"
-            "python run_tests.py tests/test_reg_ranges.py::TestHyperparameterArrayContracts::test_tunetype_mapping\n"
+            "python run_tests.py tests/regressopt/test_reg_ranges.py\n"
+            "python run_tests.py tests/regressopt/test_reg_ranges.py::TestHyperparameterArrayContracts::test_tunetype_mapping\n"
         ),
     )
     parser.add_argument(

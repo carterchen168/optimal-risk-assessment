@@ -18,7 +18,7 @@ import pytest
 # Import plotregressresults directly (no user_input_ressarch dependency)
 # ---------------------------------------------------------------------------
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _spec = importlib.util.spec_from_file_location(
     "plotregressresults",
     os.path.join(_ROOT, "plotregressresults.py"),

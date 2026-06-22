@@ -31,7 +31,7 @@ import pytest
 
 sys.modules.setdefault('user_input_ressarch', MagicMock())
 
-_path = os.path.join(os.path.dirname(__file__), "..", "regressopt", "modelopttest.py")
+_path = os.path.join(os.path.dirname(__file__), "..", "..", "regressopt", "modelopttest.py")
 _spec = importlib.util.spec_from_file_location("regressopt.modelopttest", _path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
@@ -142,6 +142,22 @@ class TestSingleFoldFallback:
         tr, tst = _make_tr_tst(n=20)
         monkeypatch.setattr(_mod, 'mainREGcode_ressarch', engine)
         modelopttest(1.0, p, 0, tr, tst)
+
+        assert sizes[0]['tr'] == 20
+        assert sizes[0]['tst'] == 20
+
+    def test_explicit_single_filelength_train_and_test_are_full_set(self, monkeypatch):
+        """filelength=[n] (explicit, non-empty) still lands on num_folds==1 → train_mask == test_mask."""
+        sizes = []
+
+        def engine(x, trpart, tstpart, algo_list, params):
+            sizes.append({'tr': len(trpart.y), 'tst': len(tstpart.y[0])})
+            return Struct(yhat=[np.zeros_like(tstpart.y[0])]), {}
+
+        params = _make_params(filelength=[20])
+        tr, tst = _make_tr_tst(n=20)
+        monkeypatch.setattr(_mod, 'mainREGcode_ressarch', engine)
+        modelopttest(1.0, params, _LIN_IDX, tr, tst)
 
         assert sizes[0]['tr'] == 20
         assert sizes[0]['tst'] == 20

@@ -75,6 +75,7 @@ def run(params: Any) -> Tuple[Any, List]:
 
     # 4. Transform held-out test data
     test.x, test.y = scaler.transform_evaluation_data(test.x, test.y)
+    model_select_data.tst_y = test.y
 
     # 5. Rebuild train_cell batches from the now-scaled train arrays
     train_cell.x = [train.x[i:i+1, :] for i in range(len(train.y))]

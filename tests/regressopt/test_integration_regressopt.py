@@ -58,7 +58,7 @@ from regressopt.preprocessing import GlobalDataScaler
 # at module level; mocks above satisfy those imports).
 # ---------------------------------------------------------------------------
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _spec = importlib.util.spec_from_file_location(
     "testoptloop_ressarch",
     os.path.join(_ROOT, "testoptloop_ressarch.py"),

@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 # Import directly from the module file to match preprocessing test isolation pattern
-_mod_path = os.path.join(os.path.dirname(__file__), "..", "regressopt", "elm.py")
+_mod_path = os.path.join(os.path.dirname(__file__), "..", "..", "regressopt", "elm.py")
 _spec = importlib.util.spec_from_file_location("regressopt.elm", _mod_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

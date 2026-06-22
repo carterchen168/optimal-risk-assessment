@@ -25,7 +25,7 @@ import pytest
 
 sys.modules.setdefault('user_input_ressarch', MagicMock())
 
-_path = os.path.join(os.path.dirname(__file__), "..", "regressopt", "modelsearch.py")
+_path = os.path.join(os.path.dirname(__file__), "..", "..", "regressopt", "modelsearch.py")
 _spec = importlib.util.spec_from_file_location("regressopt.modelsearch", _path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
@@ -265,7 +265,63 @@ class TestSolverRouting:
 
 
 # ---------------------------------------------------------------------------
-# 4. History contracts
+# 4. Maxtime enforcement (documents the TODOs in modelsearch.py)
+# ---------------------------------------------------------------------------
+
+class TestMaxtimeEnforcement:
+    """
+    params.regress.maxtime is only enforced for dual_annealing, differential_evolution,
+    and basinhopping (wrapped via _make_time_guard). shgo, Nelder-Mead, and the default
+    L-BFGS-B path do NOT enforce it — see TODOs at modelsearch.py:47,52,70,81. These
+    tests lock down that known limitation; if the TODOs are ever fixed, these tests
+    must be updated (not silently left passing for the wrong reason).
+    """
+
+    def test_maxtime_ignored_for_default_lbfgsb(self):
+        """opt_idx=6 (default, L-BFGS-B): callback is unwrapped — never signals stop."""
+        params = _make_params(opt_idx=6, max_time=5.0)
+        tr, trtest = _make_tr_trtest()
+        with patch.object(_mod, 'minimize') as mock_min:
+            mock_min.return_value = _MOCK_RESULT
+            optimsearch([1.0], params, tr, trtest, 0)
+            callback = mock_min.call_args.kwargs['callback']
+        assert callback(np.array([1.0])) is None
+
+    def test_maxtime_ignored_for_nelder_mead(self):
+        """opt_idx=4 (Nelder-Mead): callback is unwrapped — never signals stop."""
+        params = _make_params(opt_idx=4, max_time=5.0)
+        tr, trtest = _make_tr_trtest()
+        with patch.object(_mod, 'minimize') as mock_min:
+            mock_min.return_value = _MOCK_RESULT
+            optimsearch([1.0], params, tr, trtest, 0)
+            callback = mock_min.call_args.kwargs['callback']
+        assert callback(np.array([1.0])) is None
+
+    def test_maxtime_ignored_for_shgo(self):
+        """opt_idx=1 (shgo): no callback kwarg passed at all, regardless of max_time."""
+        params = _make_params(opt_idx=1, max_time=5.0)
+        tr, trtest = _make_tr_trtest()
+        with patch.object(_mod, 'shgo') as mock_shgo:
+            mock_shgo.return_value = _MOCK_RESULT
+            optimsearch([1.0], params, tr, trtest, 0)
+        assert 'callback' not in mock_shgo.call_args.kwargs
+
+    def test_maxtime_enforced_for_dual_annealing(self):
+        """Contrast case: opt_idx=2 (dual_annealing) DOES wrap callback with the time guard."""
+        params = _make_params(opt_idx=2, max_time=10.0)
+        tr, trtest = _make_tr_trtest()
+        with patch.object(_mod, 'dual_annealing') as mock_da, \
+             patch.object(_mod, 'time') as mock_time:
+            mock_da.return_value = _MOCK_RESULT
+            mock_time.monotonic.side_effect = [0.0, 20.0]  # start=0, now=20 > max_time
+            optimsearch([1.0], params, tr, trtest, 0)
+            callback = mock_da.call_args.kwargs['callback']
+            result = callback(np.array([1.0]))
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# 5. History contracts
 # ---------------------------------------------------------------------------
 
 class TestHistoryContracts:
@@ -315,7 +371,7 @@ class TestHistoryContracts:
 
 
 # ---------------------------------------------------------------------------
-# 5. Return contract
+# 6. Return contract
 # ---------------------------------------------------------------------------
 
 class TestReturnContract:

@@ -20,7 +20,7 @@ import pytest
 
 # Import directly from the module file to avoid regressopt/__init__.py side
 # effects (it opens params.txt at import time via user_input_ressarch).
-_mod_path = os.path.join(os.path.dirname(__file__), "..", "regressopt", "preprocessing.py")
+_mod_path = os.path.join(os.path.dirname(__file__), "..", "..", "regressopt", "preprocessing.py")
 _spec = importlib.util.spec_from_file_location("regressopt.preprocessing", _mod_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

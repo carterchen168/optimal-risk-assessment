@@ -53,7 +53,7 @@ for _name in [
 # level; mocks above satisfy those imports).
 # ---------------------------------------------------------------------------
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _spec = importlib.util.spec_from_file_location(
     "testoptloop_ressarch",
     os.path.join(_ROOT, "testoptloop_ressarch.py"),
@@ -171,6 +171,39 @@ class TestRunR2:
         model_select_data, _ = run_result
         yhat = model_select_data.output_val[algo_idx].yhat[0]
         r2 = r2_score(model_select_data.vld_y, yhat)
+        assert r2 > 0.0, f"{ALL_ALGOS[algo_idx]}: R²={r2:.3f} <= 0 (worse than predicting mean)"
+
+
+# ---------------------------------------------------------------------------
+# 3b. Output contract + R² — output_tst (held-out Boston test split)
+# ---------------------------------------------------------------------------
+# Mirrors TestRunOutputContract/TestRunR2 above for output_val, but for
+# output_tst — the held-out test.csv split that run() computes for every
+# algo but which previously had zero assertions in this suite.
+
+class TestRunOutputContractTst:
+
+    @pytest.mark.parametrize("algo_idx", range(len(ALL_ALGOS)))
+    def test_yhat_correct_shape(self, algo_idx, run_result):
+        model_select_data, _ = run_result
+        yhat = model_select_data.output_tst[algo_idx].yhat[0]
+        assert yhat.shape == (76,)
+
+    @pytest.mark.parametrize("algo_idx", range(len(ALL_ALGOS)))
+    def test_yhat_no_nan_or_inf(self, algo_idx, run_result):
+        model_select_data, _ = run_result
+        yhat = model_select_data.output_tst[algo_idx].yhat[0]
+        assert not np.any(np.isnan(yhat)), f"{ALL_ALGOS[algo_idx]}: NaN in yhat"
+        assert not np.any(np.isinf(yhat)), f"{ALL_ALGOS[algo_idx]}: Inf in yhat"
+
+
+class TestRunR2Tst:
+
+    @pytest.mark.parametrize("algo_idx", range(len(ALL_ALGOS)))
+    def test_r2_above_zero(self, algo_idx, run_result):
+        model_select_data, _ = run_result
+        yhat = model_select_data.output_tst[algo_idx].yhat[0]
+        r2 = r2_score(model_select_data.tst_y, yhat)
         assert r2 > 0.0, f"{ALL_ALGOS[algo_idx]}: R²={r2:.3f} <= 0 (worse than predicting mean)"
 
 

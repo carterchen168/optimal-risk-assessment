@@ -31,7 +31,7 @@ from sklearn.metrics import r2_score
 
 sys.modules.setdefault('user_input_ressarch', MagicMock())
 
-_path = os.path.join(os.path.dirname(__file__), "..", "regressopt", "mainREGcode_ressarch.py")
+_path = os.path.join(os.path.dirname(__file__), "..", "..", "regressopt", "mainREGcode_ressarch.py")
 _spec = importlib.util.spec_from_file_location("regressopt.mainREGcode_ressarch", _path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
@@ -303,7 +303,72 @@ class TestGPScaleGuard:
 
 
 # ---------------------------------------------------------------------------
-# 5. Multi-batch
+# 5. SVR gamma guard (x <= 0 clamps to 1e-10)
+# ---------------------------------------------------------------------------
+
+class TestSVRGammaGuard:
+    """SVR branch clamps non-positive x (gamma) to 1e-10 (mainREGcode_ressarch.py:86)."""
+
+    def test_zero_gamma_clamped_to_eps(self):
+        """x=0.0 → gamma clamped to 1e-10."""
+        tr, tst = _make_data()
+        opts = _make_opts()
+        mainREGcode_ressarch(0.0, tr, tst, ['svr'], opts)
+        assert opts.modelSVR.gamma == 1e-10
+
+    def test_negative_gamma_clamped_to_eps(self):
+        """x=-5.0 → gamma clamped to 1e-10."""
+        tr, tst = _make_data()
+        opts = _make_opts()
+        mainREGcode_ressarch(-5.0, tr, tst, ['svr'], opts)
+        assert opts.modelSVR.gamma == 1e-10
+
+    def test_positive_gamma_unclamped(self):
+        """x=0.5 (positive) → gamma passes through unclamped."""
+        tr, tst = _make_data()
+        opts = _make_opts()
+        mainREGcode_ressarch(0.5, tr, tst, ['svr'], opts)
+        assert opts.modelSVR.gamma == 0.5
+
+
+# ---------------------------------------------------------------------------
+# 6. k-NN neighbor guard (n_neighbors clamped to training set size)
+# ---------------------------------------------------------------------------
+
+class TestKNNNeighborGuard:
+    """k-NN branch clamps n_neighbors to len(tr.y) (mainREGcode_ressarch.py:123)."""
+
+    def _spy_knn(self, monkeypatch, captured):
+        """Wrap the real KNeighborsRegressor to record the n_neighbors it's built with."""
+        real_cls = _mod.KNeighborsRegressor
+
+        def spy(*args, **kwargs):
+            captured.append(kwargs.get('n_neighbors'))
+            return real_cls(*args, **kwargs)
+
+        monkeypatch.setattr(_mod, 'KNeighborsRegressor', spy)
+
+    def test_k_clamped_to_training_size(self, monkeypatch):
+        """x=100 with only 5 training samples → n_neighbors clamped to 5."""
+        captured = []
+        self._spy_knn(monkeypatch, captured)
+        tr, tst = _make_data(n=5)
+        opts = _make_opts()
+        mainREGcode_ressarch(100, tr, tst, ['knn'], opts)
+        assert captured == [5]
+
+    def test_k_within_training_size_unclamped(self, monkeypatch):
+        """x=3 with 15 training samples → n_neighbors passes through unclamped."""
+        captured = []
+        self._spy_knn(monkeypatch, captured)
+        tr, tst = _make_data(n=15)
+        opts = _make_opts()
+        mainREGcode_ressarch(3, tr, tst, ['knn'], opts)
+        assert captured == [3]
+
+
+# ---------------------------------------------------------------------------
+# 7. Multi-batch
 # ---------------------------------------------------------------------------
 
 class TestMultiBatch:
@@ -340,7 +405,7 @@ class TestMultiBatch:
 
 
 # ---------------------------------------------------------------------------
-# 6. ELM config from runOptions
+# 8. ELM config from runOptions
 # ---------------------------------------------------------------------------
 
 class TestELMConfig:
@@ -372,7 +437,7 @@ class TestELMConfig:
 
 
 # ---------------------------------------------------------------------------
-# 7. Algorithm accuracy
+# 9. Algorithm accuracy
 # ---------------------------------------------------------------------------
 
 def _run_accuracy(algo, hyperparam, relationship='linear', n_train=120, n_test=40,

@@ -28,7 +28,7 @@ for _name in ['user_input_ressarch', 'regressopt', 'detectopt',
               'ldslearn', 'ldslearn.lds_timeseries']:
     sys.modules.setdefault(_name, MagicMock())
 
-_path = os.path.join(os.path.dirname(__file__), "..", "testoptloop_ressarch.py")
+_path = os.path.join(os.path.dirname(__file__), "..", "..", "testoptloop_ressarch.py")
 _spec = importlib.util.spec_from_file_location("testoptloop_ressarch", _path)
 _mod  = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
