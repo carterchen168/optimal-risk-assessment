@@ -37,7 +37,8 @@ def guess(
     D_g  = np.random.randn(n, m)
     Q_g  = np.eye(k)
     # np.cov uses (T-1) denominator by default — matches MATLAB cov()
-    R_g  = np.cov(yt)       # yt is (n, T); numpy cov operates over rows
+    # np.atleast_2d guards n=1, where np.cov collapses to a 0-d scalar.
+    R_g  = np.atleast_2d(np.cov(yt))       # yt is (n, T); numpy cov operates over rows
     P0_g = np.eye(k)
     x0_g = np.zeros((k, 1))
     return A_g, B_g, C_g, D_g, Q_g, R_g, x0_g, P0_g
