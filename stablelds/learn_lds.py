@@ -187,10 +187,15 @@ def learnLB2Model(S1, S2):
       Lacy & Bernstein, "Subspace Identification with Guaranteed Stability
       using Constrained Optimization", IEEE TAC 2003.
 
+    Ported directly from learnLB2Model.m (vectorised linear-equality + SOC +
+    PSD form), mirroring the translation style used in learnLB1Model() above
+    — not the (non-convex, A @ Z product-of-variables) formulation this
+    function previously had.
+
     Parameters
     ----------
-    S1 : np.ndarray (n, T-1)
-    S2 : np.ndarray (n, T-1)
+    S1 : np.ndarray (n, T-1) — states at t = 0..T-2
+    S2 : np.ndarray (n, T-1) — states at t = 1..T-1
 
     Returns
     -------
@@ -205,37 +210,63 @@ def learnLB2Model(S1, S2):
         ) from exc
 
     n = S1.shape[0]
+    delta = 0.001   # from learnLB2Model.m
 
-    # Standard parameters (from learnLB2Model.m)
-    delta  = 0.001
-    lam    = 0.0     # λ = 0 → pure constraint, no regularisation
+    U = np.zeros_like(S1)            # (n, L) zero input
+    tmp1 = np.vstack([S1, U])        # (2n, L)
+    term2 = tmp1.T @ np.linalg.pinv(tmp1 @ tmp1.T)   # (L, 2n)
+    term3 = S2 @ term2                                # (n, 2n)
+    X1 = term3[:, :n]                                 # (n, n)
 
-    # SDP variables
-    Z = cp.Variable((n, n), symmetric=True)   # (n, n) PSD
-    A = cp.Variable((n, n))                   # (n, n) dynamics matrix
-    P = cp.Variable((n, n), symmetric=True)   # (n, n) PSD
+    def vec(M):
+        return M.ravel(order='F')
 
-    # Objective: lambda * trace(Z - I)^2 + (1-lambda) * ||A*Z - P||^2
-    # With lambda=0: minimise ||A*Z - P||_F^2
-    objective = cp.Minimize(cp.sum_squares(A @ Z - P))
+    # --- block Ax matrix (see learnLB2Model.m for derivation) ---
+    t1 = np.zeros((n * n, 1))
+    t2 = -np.eye(n * n)
+    t3 = np.kron(np.hstack([np.zeros((n, n)), np.eye(n)]),
+                 np.hstack([-np.eye(n), X1]))          # (n*n, 4*n*n)
 
-    # Block PSD constraint: [Z  A; A' P] >= delta * I_{2n}
-    block = cp.bmat([[Z, A], [A.T, P]])
+    t4 = np.zeros((n * n, 1))
+    t5 = np.zeros((n * n, n * n))
+    t6 = (np.kron(np.hstack([np.zeros((n, n)), np.eye(n)]),
+                   np.hstack([np.zeros((n, n)), np.eye(n)]))
+          - np.kron(np.hstack([np.eye(n), np.zeros((n, n))]),
+                     np.hstack([np.eye(n), np.zeros((n, n))])))
+
+    Ax = np.block([
+        [t1, t2, t3],
+        [t4, t5, t6],
+    ])
+
+    bx = delta * np.concatenate([np.zeros(n * n), vec(np.eye(n))])
+
+    N = 5 * n * n + 1   # 4*n*n (z3) + n*n (z2) + 1 (z1)
+
+    z1_inds = [0]
+    z2_inds = list(range(1, 1 + n * n))
+    z3_inds = list(range(z2_inds[-1] + 1, z2_inds[-1] + 1 + 4 * n * n))
+
+    cx = np.zeros(N)
+    cx[0] = 1.0   # lambda = 0 → no regularisation term on P's diagonal
+
+    z = cp.Variable(N)
     constraints = [
-        block >> delta * np.eye(2 * n),
-        Z >> delta * np.eye(n),
-        P >> delta * np.eye(n),
+        Ax @ z == bx,
+        z[z1_inds[0]] >= cp.norm(z[z2_inds]),
+        cp.reshape(z[z3_inds], (2 * n, 2 * n), order='F') >> 0,
     ]
-
-    prob = cp.Problem(objective, constraints)
+    prob = cp.Problem(cp.Minimize(cx @ z), constraints)
     prob.solve(solver=cp.SCS, verbose=False)
 
-    if (prob.status not in ('optimal', 'optimal_inaccurate')
-            or Z.value is None or A.value is None or P.value is None):
+    if prob.status not in ('optimal', 'optimal_inaccurate') or z.value is None:
+        # Fallback: least-squares (possibly unstable)
         return S2 @ np.linalg.pinv(S1)
 
-    # From learnLB2Model.m: Ahat = Q * inv(P)  where Q = the A-variable result
-    Ahat = A.value @ np.linalg.inv(P.value)
+    Z3 = z.value[z3_inds].reshape((2 * n, 2 * n), order='F')
+    P = Z3[n:2 * n, n:2 * n]
+    Q = Z3[:n, n:2 * n]
+    Ahat = Q @ np.linalg.inv(P)
     return Ahat
 
 

@@ -151,7 +151,7 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
     # MATLAB svds(M,1) returns [u, s, v] where u,v are column vectors.
     # Outer product u*v' (MATLAB) = u_vec @ v_vt  (Python, since v_vt = v.T)
     _, s_top, _ = svds(M, k=1)
-    s_top = float(s_top)
+    s_top = float(s_top[0])
 
     if simulate_LB1:
         if s_top <= 1 + sv_eps:
@@ -181,7 +181,7 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
 
         _, max_e, min_e = _get_eigenthings(M)
         u_vec, s_arr, v_vt = svds(M, k=1)
-        s_top = float(s_arr)
+        s_top = float(s_arr[0])
 
         if simulate_LB1:
             if s_top <= 1 + sv_eps:
