@@ -29,6 +29,8 @@ pstruct = _mod.pstruct
 KalmanDoubling = _mod.KalmanDoubling
 LyapDoubling = _mod.LyapDoubling
 SylvDoubling = _mod.SylvDoubling
+Step = _mod.Step
+Step_out = _mod.Step_out
 
 
 def _make_pd(n, seed):
@@ -216,3 +218,137 @@ def test_kalman_doubling_v_0_1_satisfies_steady_state_riccati():
 
     rhs = A @ V_0_0 @ A.T + Q
     assert np.linalg.norm(V_0_1 - rhs) < 1e-3 * np.linalg.norm(V_0_1)
+
+
+# ---------------------------------------------------------------------------
+# Step / Step_out — the core ASOS approximate E-step
+# ---------------------------------------------------------------------------
+
+def _simulate_lds(A, B, C, D, Q, R, pi_1, V_1, u_, seed):
+    """Simulate a synthetic LDS trajectory given a fixed input sequence."""
+    rng = np.random.default_rng(seed)
+    hidsize = A.shape[0]
+    outsize = C.shape[0]
+    T = u_.shape[1]
+
+    x_ = np.zeros((hidsize, T))
+    y_ = np.zeros((outsize, T))
+    x_prev = rng.multivariate_normal(pi_1, V_1)
+    for t in range(T):
+        if t == 0:
+            x_[:, t] = x_prev
+        else:
+            w = rng.multivariate_normal(np.zeros(hidsize), Q)
+            x_[:, t] = A @ x_[:, t - 1] + B @ u_[:, t - 1] + w
+        v = rng.multivariate_normal(np.zeros(outsize), R)
+        y_[:, t] = C @ x_[:, t] + D @ u_[:, t] + v
+    return y_, x_
+
+
+def _build_o(y_, u_, klim, edgesize):
+    """Build an ApproxEStep-shaped Struct directly from raw sequences via
+    the brute-force (non-FFT) moment formulas given as the commented-out
+    fallback in ApproxEStep.m. ApproxEStep() itself isn't ported yet
+    (issue #015), so this test-local helper stands in for it."""
+    outsize, T = y_.shape
+    insize = u_.shape[0]
+    klag = 2 * klim + 1
+    total = klim + 2
+
+    y_y_ = np.zeros((outsize, outsize, total))
+    u_u_ = np.zeros((insize, insize, total))
+    u_y_ = np.zeros((insize, outsize, total))
+    y_u_ = np.zeros((outsize, insize, total))
+    for k in range(total):
+        for t in range(edgesize, T - k - edgesize):
+            y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
+            u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
+            u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
+            y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
+
+    return Struct(
+        klim=klim, klag=klag, edgesize=edgesize, T=T,
+        y_y_=y_y_, u_u_=u_u_, u_y_=u_y_, y_u_=y_u_,
+        y_lead_=y_[:, 0:edgesize], u_lead_=u_[:, 0:edgesize],
+        y_trail_=y_[:, T - edgesize:T], u_trail_=u_[:, T - edgesize:T],
+        y_pre_=y_[:, edgesize:edgesize + klag],
+        u_pre_=u_[:, edgesize:edgesize + klag],
+        y_post_=y_[:, T - klag - edgesize:T - edgesize],
+        u_post_=u_[:, T - klag - edgesize:T - edgesize],
+    )
+
+
+def _synthetic_step_inputs(seed, insize=1):
+    hidsize, outsize = 2, 2
+    klim, edgesize, T = 2, 2, 30
+    A = _make_stable(hidsize, seed)
+    Q = _make_pd(hidsize, seed + 1) * 0.01
+    C = np.random.default_rng(seed + 2).standard_normal((outsize, hidsize))
+    R = _make_pd(outsize, seed + 3) * 0.01
+    rng = np.random.default_rng(seed + 4)
+    B = rng.standard_normal((hidsize, insize)) if insize else np.zeros((hidsize, 0))
+    D = rng.standard_normal((outsize, insize)) if insize else np.zeros((outsize, 0))
+    pi_1 = np.zeros(hidsize)
+    V_1 = _make_pd(hidsize, seed + 5) * 0.1
+    u_ = rng.standard_normal((insize, T)) if insize else np.zeros((0, T))
+
+    y_, _ = _simulate_lds(A, B, C, D, Q, R, pi_1, V_1, u_, seed + 6)
+    o = _build_o(y_, u_, klim, edgesize)
+    params = pstruct(A, B, C, D, Q, R, pi_1, V_1)
+    return o, params
+
+
+def test_step_output_shapes_and_finite_LL_err():
+    o, params = _synthetic_step_inputs(seed=10, insize=1)
+    A, B, C, D, Q, R, insize, outsize, hidsize, pi_1, V_1 = pextract(params)
+
+    o_out, expt, err, LL = Step(o, params)
+
+    assert o_out is o
+    assert expt.Ex_x_0.shape == (hidsize, hidsize)
+    assert expt.Ex_x_1.shape == (hidsize, hidsize)
+    assert expt.Ey_x_0.shape == (outsize, hidsize)
+    assert expt.Eu_x_0.shape == (insize, hidsize)
+    assert expt.Eu_x_1.shape == (hidsize, insize)
+    assert expt.Ex_.start.shape == (hidsize,)
+    assert expt.Ex_.end.shape == (hidsize,)
+    assert expt.Exx_.start.shape == (hidsize, hidsize)
+    assert expt.Exx_.end.shape == (hidsize, hidsize)
+
+    assert np.isfinite(err)
+    assert np.isfinite(LL)
+    assert np.isreal(err)
+    assert np.isreal(LL)
+
+
+@pytest.mark.parametrize("seed", [10, 11, 12])
+def test_step_sufficient_stats_are_psd(seed):
+    o, params = _synthetic_step_inputs(seed=seed, insize=1)
+    _, expt, _, _ = Step(o, params)
+
+    for mat in (expt.Ex_x_0, expt.Exx_.start, expt.Exx_.end):
+        sym = (mat + mat.T) / 2
+        eigvals = np.linalg.eigvalsh(sym)
+        assert np.all(eigvals >= -1e-6 * max(1.0, np.max(np.abs(eigvals))))
+
+
+def test_step_out_is_step_with_zero_insize():
+    """Resolves issue #014: Step_out is Step() called with insize=0 (no
+    distinct algorithm), matching learn_kalman.py's no-input call site
+    which only supplies A, C, Q, R, initx, initV (no B/D)."""
+    o, params = _synthetic_step_inputs(seed=20, insize=0)
+    A, B, C, D, Q, R, insize, outsize, hidsize, pi_1, V_1 = pextract(params)
+    assert insize == 0
+
+    in_struct = dict(A=A, C=C, Q=Q, R=R, initx=pi_1, initV=V_1)
+    o_wrap, expt_wrap, err_wrap, LL_wrap = Step_out(o, in_struct)
+
+    o_direct, expt_direct, err_direct, LL_direct = Step(o, params)
+
+    assert o_wrap is o_direct is o
+    assert np.allclose(expt_wrap.Ex_x_0, expt_direct.Ex_x_0)
+    assert np.allclose(expt_wrap.Ex_x_1, expt_direct.Ex_x_1)
+    assert np.allclose(expt_wrap.Ey_x_0, expt_direct.Ey_x_0)
+    assert expt_wrap.Eu_x_0.shape == (0, A.shape[0])
+    assert np.isclose(err_wrap, err_direct)
+    assert np.isclose(LL_wrap, LL_direct)
