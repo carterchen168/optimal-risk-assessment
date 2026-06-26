@@ -31,6 +31,7 @@ LyapDoubling = _mod.LyapDoubling
 SylvDoubling = _mod.SylvDoubling
 Step = _mod.Step
 Step_out = _mod.Step_out
+ApproxEStep = _mod.ApproxEStep
 
 
 def _make_pd(n, seed):
@@ -245,42 +246,10 @@ def _simulate_lds(A, B, C, D, Q, R, pi_1, V_1, u_, seed):
     return y_, x_
 
 
-def _build_o(y_, u_, klim, edgesize):
-    """Build an ApproxEStep-shaped Struct directly from raw sequences via
-    the brute-force (non-FFT) moment formulas given as the commented-out
-    fallback in ApproxEStep.m. ApproxEStep() itself isn't ported yet
-    (issue #015), so this test-local helper stands in for it."""
-    outsize, T = y_.shape
-    insize = u_.shape[0]
-    klag = 2 * klim + 1
-    total = klim + 2
-
-    y_y_ = np.zeros((outsize, outsize, total))
-    u_u_ = np.zeros((insize, insize, total))
-    u_y_ = np.zeros((insize, outsize, total))
-    y_u_ = np.zeros((outsize, insize, total))
-    for k in range(total):
-        for t in range(edgesize, T - k - edgesize):
-            y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
-            u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
-            u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
-            y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
-
-    return Struct(
-        klim=klim, klag=klag, edgesize=edgesize, T=T,
-        y_y_=y_y_, u_u_=u_u_, u_y_=u_y_, y_u_=y_u_,
-        y_lead_=y_[:, 0:edgesize], u_lead_=u_[:, 0:edgesize],
-        y_trail_=y_[:, T - edgesize:T], u_trail_=u_[:, T - edgesize:T],
-        y_pre_=y_[:, edgesize:edgesize + klag],
-        u_pre_=u_[:, edgesize:edgesize + klag],
-        y_post_=y_[:, T - klag - edgesize:T - edgesize],
-        u_post_=u_[:, T - klag - edgesize:T - edgesize],
-    )
-
-
 def _synthetic_step_inputs(seed, insize=1):
     hidsize, outsize = 2, 2
     klim, edgesize, T = 2, 2, 30
+    klag = 2 * klim + 1
     A = _make_stable(hidsize, seed)
     Q = _make_pd(hidsize, seed + 1) * 0.01
     C = np.random.default_rng(seed + 2).standard_normal((outsize, hidsize))
@@ -293,9 +262,44 @@ def _synthetic_step_inputs(seed, insize=1):
     u_ = rng.standard_normal((insize, T)) if insize else np.zeros((0, T))
 
     y_, _ = _simulate_lds(A, B, C, D, Q, R, pi_1, V_1, u_, seed + 6)
-    o = _build_o(y_, u_, klim, edgesize)
+    o = ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize)
     params = pstruct(A, B, C, D, Q, R, pi_1, V_1)
     return o, params
+
+
+def test_approxestep_output_shapes():
+    hidsize, outsize, insize = 2, 2, 1
+    klim, edgesize, T = 2, 2, 30
+    klag = 2 * klim + 1
+    A = _make_stable(hidsize, seed=30)
+    Q = _make_pd(hidsize, seed=31) * 0.01
+    C = np.random.default_rng(32).standard_normal((outsize, hidsize))
+    R = _make_pd(outsize, seed=33) * 0.01
+    rng = np.random.default_rng(34)
+    B = rng.standard_normal((hidsize, insize))
+    D = rng.standard_normal((outsize, insize))
+    pi_1 = np.zeros(hidsize)
+    V_1 = _make_pd(hidsize, seed=35) * 0.1
+    u_ = rng.standard_normal((insize, T))
+    y_, _ = _simulate_lds(A, B, C, D, Q, R, pi_1, V_1, u_, seed=36)
+
+    o = ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize)
+
+    assert o.klim == klim
+    assert o.klag == klag
+    assert o.edgesize == edgesize
+    assert o.T == T
+    for field in ("y_y_", "y_u_", "u_y_", "u_u_"):
+        arr = getattr(o, field)
+        rows = outsize if field[0] == "y" else insize
+        cols = outsize if field[2] == "y" else insize
+        assert arr.shape == (rows, cols, klim + 2)
+    for field in ("y_lead_", "u_lead_", "y_trail_", "u_trail_"):
+        rows = outsize if field[0] == "y" else insize
+        assert getattr(o, field).shape == (rows, edgesize)
+    for field in ("y_pre_", "u_pre_", "y_post_", "u_post_"):
+        rows = outsize if field[0] == "y" else insize
+        assert getattr(o, field).shape == (rows, klag)
 
 
 def test_step_output_shapes_and_finite_LL_err():

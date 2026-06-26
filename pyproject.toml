@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+qp = ["quadprog"]
 
 [tool.pytest.ini_options]
 filterwarnings = [

@@ -153,6 +153,47 @@ def KalmanDoubling(A, Q, C, R, T):
 
 
 # ---------------------------------------------------------------------------
+# ApproxEStep — precompute lag-indexed summary statistics (ASOS Toolbox's
+# @ApproxEStep/ApproxEStep.m)
+# ---------------------------------------------------------------------------
+
+
+def ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize):
+    """Precompute ASOS lag-indexed summary statistics (ASOS Toolbox's
+    @ApproxEStep/ApproxEStep.m), once per sequence, ahead of the per-iteration
+    `Step()` calls that consume the returned Struct.
+
+    Ports the brute-force fallback formula that the MATLAB source leaves
+    commented out as an FFT-equivalent but slower alternative, rather than
+    the FFT path — same output, without the negative-lag index-reversal
+    translation risk the FFT path introduces.
+    """
+    T = y_.shape[1]
+    total = klim + 2
+    y_y_ = np.zeros((outsize, outsize, total))
+    u_u_ = np.zeros((insize, insize, total))
+    u_y_ = np.zeros((insize, outsize, total))
+    y_u_ = np.zeros((outsize, insize, total))
+    for k in range(total):
+        for t in range(edgesize, T - k - edgesize):
+            y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
+            u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
+            u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
+            y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
+
+    return Struct(
+        klim=klim, klag=klag, edgesize=edgesize, T=T,
+        y_y_=y_y_, u_u_=u_u_, u_y_=u_y_, y_u_=y_u_,
+        y_lead_=y_[:, 0:edgesize], u_lead_=u_[:, 0:edgesize],
+        y_trail_=y_[:, T - edgesize:T], u_trail_=u_[:, T - edgesize:T],
+        y_pre_=y_[:, edgesize:edgesize + klag],
+        u_pre_=u_[:, edgesize:edgesize + klag],
+        y_post_=y_[:, T - klag - edgesize:T - edgesize],
+        u_post_=u_[:, T - klag - edgesize:T - edgesize],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step — the core ASOS approximate E-step (ASOS Toolbox's
 # @ApproxEStep/Step.m)
 # ---------------------------------------------------------------------------

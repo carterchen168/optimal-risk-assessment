@@ -48,13 +48,13 @@ def _solve_qp_scipy(P, q, G, h):
 def _solve_qp_quadprog(P, q, G, h):
     """
     Solve via the `quadprog` package (pip install quadprog).
-    quadprog minimises: 0.5 x' G x + a' x  s.t. C' x >= b
+    quadprog minimises: 0.5 x' G x - a' x  s.t. C' x >= b
     We have: min m' P m - 2 q' m, G_ineq m <= h
-    → H = 2P, a = -2q, C' = -G_ineq, b = -h
+    → H = 2P, a = 2q, C' = -G_ineq, b = -h
     """
     import quadprog
     H  = 2.0 * P + 1e-9 * np.eye(P.shape[0])   # ensure PD
-    a  = -2.0 * q
+    a  = 2.0 * q
     C  = -G.T    # (d², k)
     b  = -h
     sol = quadprog.solve_qp(H, a, C, b)
