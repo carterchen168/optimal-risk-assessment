@@ -6,7 +6,7 @@ from scipy.sparse.linalg import svds
 # Solver helpers
 # ---------------------------------------------------------------------------
 
-def _solve_qp_scipy(P, q, G, h):
+def _solve_qp_scipy(P, q, G, h, maxiter=1000):
     """
     Solve:  min  m' P m - 2 q' m
             s.t. G m <= h
@@ -40,7 +40,7 @@ def _solve_qp_scipy(P, q, G, h):
         objective, x0, jac=gradient,
         method='SLSQP',
         constraints=constraints,
-        options={'maxiter': 2000, 'ftol': 1e-9, 'disp': False}
+        options={'maxiter': maxiter, 'ftol': 1e-9, 'disp': False}
     )
     return result.x, result.fun
 
@@ -76,14 +76,14 @@ def _solve_qp_cvxpy(P, q, G, h, d):
     return m.value, prob.value
 
 
-def _solve_qp(P, q, G, h, d, cvx_flag):
+def _solve_qp(P, q, G, h, d, cvx_flag, max_iter=1000):
     """Dispatch to the best available QP solver."""
     if cvx_flag:
         return _solve_qp_cvxpy(P, q, G, h, d)
     try:
         return _solve_qp_quadprog(P, q, G, h)
     except ImportError:
-        return _solve_qp_scipy(P, q, G, h)
+        return _solve_qp_scipy(P, q, G, h, maxiter=max_iter)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
     # ------------------------------------------------------------------
     Mprev = M.copy()
     for iteration in range(max_iter):
-        m_vec, _ = _solve_qp(P, q, G, h, d, cvx_flag)
+        m_vec, _ = _solve_qp(P, q, G, h, d, cvx_flag, max_iter=max_iter)
 
         if m_vec is None:
             break
@@ -214,9 +214,10 @@ def learn_cg_model_em(beta, gamma1, A, simulate_LB1=False, cvx_flag=False):
             else:
                 break
 
-        # Step slightly inside the stability boundary
-        alpha_final = lo + tol_bin
-        alpha_orig  = alpha - tol_bin
-        M = (1 - alpha_final) * M + alpha_orig * Morig
+        # Step slightly inside the stability boundary. Reuses the single last
+        # bisection midpoint `alpha` in both terms (matches MATLAB L248) so the
+        # blend stays a proper convex combination of M and Morig.
+        blend = alpha - tol_bin
+        M = (1 - blend) * M + blend * Morig
 
     return M.T   # MATLAB convention: return M'

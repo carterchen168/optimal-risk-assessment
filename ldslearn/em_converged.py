@@ -1,5 +1,7 @@
 import math
 
+import numpy as np
+
 
 def em_converged(
     loglik: float,
@@ -40,13 +42,13 @@ def em_converged(
             return converged, decrease
 
     delta_loglik = abs(loglik - previous_loglik)
-    avg_loglik   = (abs(loglik) + abs(previous_loglik) + 1e-300) / 2   # eps ≈ 1e-300
+    avg_loglik   = (abs(loglik) + abs(previous_loglik) + np.finfo(float).eps) / 2
 
     if (delta_loglik / avg_loglik) < threshold:
         converged = True
 
-    # Degenerate / non-finite log-likelihood → also stop
-    if math.isinf(loglik) or math.isnan(loglik):
+    # Degenerate / non-finite / complex log-likelihood → also stop
+    if not np.isreal(loglik) or math.isinf(loglik) or math.isnan(loglik):
         converged = True
 
     return converged, decrease

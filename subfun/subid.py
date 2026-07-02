@@ -134,7 +134,11 @@ def subid(y, u, i, n=None, AUXin=None, W=None, sil=0):
     R_est = _valid_matrix(R_sippy, (l, l))
     Ss    = _valid_matrix(S_sippy, (n_id, l))
 
-    # Fall back to data-driven estimates when SIPPY omits covariances
+    # Fallback is an edge case: SIPPY always derives Q/R/S from actual model
+    # residuals (res*res'/(N-1)) when identification succeeds, so these branches
+    # fire only if SIPPY returns covariances of unexpected shape — a sign the
+    # identification itself is suspect. The caller's stability while-loop will
+    # then replace A/Q/R via learn_lds regardless.
     if R_est is None:
         if ny > l:
             R_est = np.cov(y, bias=True) if l > 1 else np.array([[float(np.var(y))]])
@@ -163,10 +167,11 @@ def subid(y, u, i, n=None, AUXin=None, W=None, sil=0):
     K = _valid_matrix(K_sippy, (n_id, l))
 
     try:
-        P  = solve_discrete_are(A.T, C.T, Q_est, R_est)
+        Ss_dare = Ss if Ss is not None else np.zeros((n_id, l))
+        P  = solve_discrete_are(A.T, C.T, Q_est, R_est, s=Ss_dare)
         Ro = C @ P @ C.T + R_est
         if K is None:
-            K = A @ P @ C.T @ np.linalg.inv(Ro)
+            K = (A @ P @ C.T + Ss_dare) @ np.linalg.inv(Ro)
     except Exception:
         Ro = None
         if K is None:
