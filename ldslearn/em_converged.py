@@ -44,8 +44,11 @@ def em_converged(
     delta_loglik = abs(loglik - previous_loglik)
     avg_loglik   = (abs(loglik) + abs(previous_loglik) + np.finfo(float).eps) / 2
 
-    if (delta_loglik / avg_loglik) < threshold:
-        converged = True
+    # inf/inf -> nan on the first iteration (previous_loglik = -inf) or a
+    # non-finite loglik; nan < threshold is False, handled by the check below.
+    with np.errstate(invalid="ignore"):
+        if (delta_loglik / avg_loglik) < threshold:
+            converged = True
 
     # Degenerate / non-finite / complex log-likelihood → also stop
     if not np.isreal(loglik) or math.isinf(loglik) or math.isnan(loglik):

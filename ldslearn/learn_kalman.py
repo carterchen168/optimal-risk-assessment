@@ -449,6 +449,7 @@ def learn_kalman(
                       .alpha, .P1sum, .x1sum, .Tsum, .condQ
     LL     : list of float — log-likelihood at each EM iteration
     LLp    : list of float — "perfect" log-likelihood trajectory
+    aici   : list of float — AICS bias-correction term at each EM iteration
     """
     thresh          = 1e-6
     check_increased = True
@@ -470,7 +471,12 @@ def learn_kalman(
     has_input = datain is not None and len(datain) > 0
     if has_input:
         if not isinstance(datain, list):
-            datain = [datain]
+            # MATLAB: num2cell(datain, [1 2]) splits a raw (is, T, N) array
+            # into N per-sequence cells along the 3rd dimension.
+            if datain.ndim == 3:
+                datain = [datain[:, :, i] for i in range(datain.shape[2])]
+            else:
+                datain = [datain]
         B  = params.init.bd[:, :, np.newaxis].copy()      # (ss, is, 1)
         D  = params.init.dd[:, :, np.newaxis].copy()      # (os, is, 1)
         is_ = B.shape[1]
@@ -478,7 +484,10 @@ def learn_kalman(
         is_ = 0
 
     if not isinstance(dataout, list):
-        dataout = [dataout]
+        if dataout.ndim == 3:
+            dataout = [dataout[:, :, i] for i in range(dataout.shape[2])]
+        else:
+            dataout = [dataout]
 
     N  = len(dataout)
     ss = A.shape[0]
@@ -700,7 +709,7 @@ def learn_kalman(
             if has_input:
                 params.bd = B
                 params.dd = D
-            return params, LL, LLp
+            return params, LL, LLp, aici
 
         # --------------------------------------------------------------
         # M-step: update parameters analytically
@@ -724,13 +733,13 @@ def learn_kalman(
             D_new = CD[:, ss:]
 
             Q_est = (gamma2 - AB @ Lambda_x) / Tsum1
-            if not np.allclose(Q_est, Q_est.T):
+            if np.any(Q_est != Q_est.T):
                 Q_est = (Q_est + Q_est.T) / 2
                 if verbose:
                     print("Making Q a symmetric matrix")
 
             R_est = (alpha - CD @ Lambda_y) / Tsum
-            if not np.allclose(R_est, R_est.T):
+            if np.any(R_est != R_est.T):
                 R_est = (R_est + R_est.T) / 2
                 if verbose:
                     print("Making R a symmetric matrix")
@@ -747,7 +756,7 @@ def learn_kalman(
             # A = (gamma1 \ beta')' in MATLAB  →  solve gamma1 @ A.T = beta.T
             A_new = np.linalg.solve(gamma1, beta.T).T
             Q_est = (gamma2 - A_new @ beta.T) / Tsum1
-            if not np.allclose(Q_est, Q_est.T):
+            if np.any(Q_est != Q_est.T):
                 Q_est = (Q_est + Q_est.T) / 2
                 if verbose:
                     print("Making Q a symmetric matrix")
@@ -757,7 +766,7 @@ def learn_kalman(
             if not ar_mode:
                 C_new = np.linalg.solve(gamma, delta.T).T
                 R_est = (alpha - C_new @ delta.T) / Tsum
-                if not np.allclose(R_est, R_est.T):
+                if np.any(R_est != R_est.T):
                     R_est = (R_est + R_est.T) / 2
                     if verbose:
                         print("Making R a symmetric matrix")
@@ -777,7 +786,7 @@ def learn_kalman(
         # Update initial state and covariance
         initx_new = x1sum / N
         V_est     = P1sum / N - initx_new @ initx_new.T
-        if not np.allclose(V_est, V_est.T):
+        if np.any(V_est != V_est.T):
             V_est = (V_est + V_est.T) / 2
             if verbose:
                 print("Making P0 a symmetric matrix")
@@ -839,4 +848,4 @@ def learn_kalman(
         if (converged or decrease or num_iter >= max_iter) and verbose:
             print("Done!")
 
-    return params, LL, LLp
+    return params, LL, LLp, aici

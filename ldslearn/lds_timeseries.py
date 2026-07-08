@@ -306,7 +306,7 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
             accept_dir = os.environ.get("ACCEPT_DIR", "")
             os.chdir(os.path.join(accept_dir, "ASOS"))
 
-        params.learned, params.ll, llp = learn_kalman(
+        params.learned, params.ll, llp, aici = learn_kalman(
             y_seg, params, max_iter, diag_q, diag_r,
             ar_mode, verbose, u_seg, asos_flag
         )
