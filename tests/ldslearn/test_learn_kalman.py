@@ -432,13 +432,16 @@ def test_exact_estep_dispatches_to_estep_input_only():
     spy_estep.assert_not_called()
 
 
-def _assert_em_monotone_and_shapes(learned, LL, shapes):
+def _assert_em_shapes(learned, LL, shapes):
     assert len(LL) >= 1
-    assert np.all(np.diff(LL) >= -1e-3)
-
     n_hist = len(LL) + 1
     for field, shape in shapes.items():
         assert getattr(learned, field).shape == (*shape, n_hist)
+
+
+def _assert_em_monotone_and_shapes(learned, LL, shapes):
+    assert np.all(np.diff(LL) >= -1e-3)
+    _assert_em_shapes(learned, LL, shapes)
 
 
 def test_learn_kalman_main_loop_noinput():
@@ -666,3 +669,72 @@ def test_learn_kalman_exhausts_max_iter_without_converging():
         )
 
     assert len(LL) == 4
+
+
+def test_learn_kalman_asosflag_noinput():
+    # T must exceed 2*edgesize + klim + 1 = 53 since edgesize=25 is hardcoded
+    # at the ApproxEStep call site.
+    ss, os_, T = 2, 3, 150
+    y, _, C_true, _, _, _, _ = _simulate_lds(
+        ss, os_, T, seed=70, r_scale=0.05, q_scale=0.05
+    )
+
+    rng = np.random.default_rng(71)
+    A0 = np.diag(rng.uniform(0.2, 0.5, size=ss))
+    C0 = C_true + 0.1 * rng.standard_normal(C_true.shape)
+    Q0 = np.eye(ss) * 0.05
+    R0 = np.eye(os_) * 0.05
+    initx0 = np.zeros(ss)
+    initV0 = np.eye(ss)
+    params = _make_noinput_params(A0, C0, Q0, R0, initx0, initV0)
+    params.klim = 2
+
+    learned, LL, LLp, aici = learn_kalman(
+        [y], params, max_iter=3, verbose=False, asos_flag=True
+    )
+
+    _assert_em_shapes(learned, LL, {
+        "ad": (ss, ss), "cd": (os_, ss), "qwd": (ss, ss),
+        "rvd": (os_, os_), "xssd": (ss, ss), "initx0": (ss,),
+    })
+    assert np.all(np.isfinite(LL))
+    assert len(aici) == len(LL)
+
+
+def test_learn_kalman_asosflag_with_input():
+    ss, os_, is_, T = 2, 3, 2, 150
+    rng_data = np.random.default_rng(72)
+    y, _, C_true, _, _, _, _ = _simulate_lds(
+        ss, os_, T, seed=72, r_scale=0.05, q_scale=0.05
+    )
+    B_true = rng_data.standard_normal((ss, is_)) * 0.1
+    D_true = rng_data.standard_normal((os_, is_)) * 0.1
+    u = rng_data.standard_normal((is_, T))
+    y = y + D_true @ u  # fold the feedthrough term into the observations
+
+    rng = np.random.default_rng(73)
+    A0 = np.diag(rng.uniform(0.2, 0.5, size=ss))
+    B0 = B_true + 0.05 * rng.standard_normal(B_true.shape)
+    C0 = C_true + 0.1 * rng.standard_normal(C_true.shape)
+    D0 = D_true + 0.05 * rng.standard_normal(D_true.shape)
+    Q0 = np.eye(ss) * 0.05
+    R0 = np.eye(os_) * 0.05
+    initx0 = np.zeros(ss)
+    initV0 = np.eye(ss)
+
+    params = Struct(init=Struct(
+        ad=A0, bd=B0, cd=C0, dd=D0, qwd=Q0, rvd=R0,
+        initx0=initx0, xssd=initV0,
+    ))
+    params.klim = 2
+
+    learned, LL, LLp, aici = learn_kalman(
+        [y], params, max_iter=3, verbose=False, datain=[u], asos_flag=True
+    )
+
+    _assert_em_shapes(learned, LL, {
+        "ad": (ss, ss), "bd": (ss, is_), "cd": (os_, ss), "dd": (os_, is_),
+        "qwd": (ss, ss), "rvd": (os_, os_), "xssd": (ss, ss), "initx0": (ss,),
+    })
+    assert np.all(np.isfinite(LL))
+    assert len(aici) == len(LL)

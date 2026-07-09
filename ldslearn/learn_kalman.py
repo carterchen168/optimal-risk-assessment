@@ -2,6 +2,7 @@ import numpy as np
 from filterpy.kalman import KalmanFilter
 from filterpy.kalman import rts_smoother as fp_rts_smoother
 from em_converged import em_converged
+from asos import ApproxEStep, Step, Step_out, pstruct as _asos_pstruct
 
 
 # ---------------------------------------------------------------------------
@@ -260,25 +261,6 @@ def ExactEstep(y, u, pstruct_obj):
 
 
 # ---------------------------------------------------------------------------
-# ASOS stubs (deferred — not used by the current ACCEPT pipeline)
-# ---------------------------------------------------------------------------
-
-def ApproxEStep(y, u, klim, window, n_particles, is_dim, os_dim):
-    """STUB — Approximate E-step (ASOS mode). TODO: ASOS mode"""
-    raise NotImplementedError("ApproxEStep() — ASOS mode not yet implemented.")
-
-
-def Step(newparams_ex, pstruct_obj):
-    """STUB — ASOS iteration step with inputs. TODO: ASOS mode"""
-    raise NotImplementedError("Step() (ASOS) — not yet implemented.")
-
-
-def Step_out(newparams_ex, in_struct):
-    """STUB — ASOS iteration step without inputs. TODO: ASOS mode"""
-    raise NotImplementedError("Step_out() (ASOS) — not yet implemented.")
-
-
-# ---------------------------------------------------------------------------
 # Private E-step helpers (inner functions of learn_kalman.m)
 # ---------------------------------------------------------------------------
 
@@ -524,25 +506,19 @@ def learn_kalman(
         T = y.shape[1]
         Tsum_pre += T
 
-        if asos_flag:
-            new_params_asos.append(
-                ApproxEStep(y, u, params.klim, 2 * params.klim + 1, 25, is_, os)
-            )
-        else:
-            for t in range(T):
-                alpha += y[:, [t]] @ y[:, [t]].T
-                if has_input:
-                    eta   += u[:, [t]] @ y[:, [t]].T
-                    zeta  += u[:, [t]] @ u[:, [t]].T
-                    if t < T - 1:
-                        zeta1 += u[:, [t]] @ u[:, [t]].T
+        for t in range(T):
+            alpha += y[:, [t]] @ y[:, [t]].T
+            if has_input:
+                eta   += u[:, [t]] @ y[:, [t]].T
+                zeta  += u[:, [t]] @ u[:, [t]].T
+                if t < T - 1:
+                    zeta1 += u[:, [t]] @ u[:, [t]].T
 
-    if asos_flag:
-        alpha = sum(p.y_y_0 for p in new_params_asos)
-        if has_input:
-            zeta  = sum(p.u_u_0   for p in new_params_asos)
-            zeta1 = sum(p.u_u_0_2 for p in new_params_asos)
-            eta   = sum(p.u_y_0   for p in new_params_asos)
+        if asos_flag:
+            u_asos = u if has_input else np.zeros((0, T))
+            new_params_asos.append(
+                ApproxEStep(y, u_asos, params.klim, 2 * params.klim + 1, 25, is_, os)
+            )
 
     # ------------------------------------------------------------------
     # EM loop
@@ -594,22 +570,36 @@ def learn_kalman(
             y = dataout[ex]
             T = y.shape[1]
             Tsum += T
+            u = datain[ex] if has_input else None
 
             if asos_flag:
                 if has_input:
-                    params_ex, out_ex, err, loglik_t = Step(
+                    _, expt, err, loglik_t = Step(
                         new_params_asos[ex],
-                        pstruct(A_t, B_t, C_t, D_t, Q_t, R_t, initx_t, initV_t)
+                        _asos_pstruct(A_t, B_t, C_t, D_t, Q_t, R_t, initx_t, initV_t)
                     )
                 else:
                     in_struct = dict(A=A_t, C=C_t, Q=Q_t, R=R_t,
                                      initx=initx_t, initV=initV_t)
-                    params_ex, out_ex, err, loglik_t = Step_out(
+                    _, expt, err, loglik_t = Step_out(
                         new_params_asos[ex], in_struct
                     )
+                beta_t   = expt.Ex_x_1
+                gamma_t  = expt.Ex_x_0
+                delta_t  = expt.Ey_x_0
+                gamma1_t = gamma_t - expt.Exx_.end
+                gamma2_t = gamma_t - expt.Exx_.start
+                x1       = expt.Ex_.start
+                V1       = expt.Exx_.start - x1[:, None] @ x1[None, :]
+                perfect_loglik_t = 0.0
+                aici_bias_cr_t   = 0.0
+                if has_input:
+                    xi_t  = expt.Eu_x_0
+                    xi1_t = xi_t - u[:, [-1]] @ expt.Ex_.end[None, :]
+                    psi_t = expt.Eu_x_1.T
+
             else:
                 if has_input:
-                    u = datain[ex]
                     expt, loglik_t, err = ExactEstep(
                         y, u,
                         pstruct(A_t, B_t, C_t, D_t, Q_t, R_t, initx_t, initV_t)
@@ -654,45 +644,25 @@ def learn_kalman(
                         perfect_loglik_t = 0.0
                         aici_bias_cr_t   = 0.0
 
-                beta   += beta_t
-                gamma  += gamma_t
-                delta  += delta_t
-                gamma1 += gamma1_t
-                gamma2 += gamma2_t
-                P1sum  += V1 + x1[:, None] @ x1[None, :]
-                x1sum  += x1[:, None]
-                perfect_loglik += perfect_loglik_t
-                aici_bias_cr   += aici_bias_cr_t
-                loglik         += loglik_t
+            beta   += beta_t
+            gamma  += gamma_t
+            delta  += delta_t
+            gamma1 += gamma1_t
+            gamma2 += gamma2_t
+            P1sum  += V1 + x1[:, None] @ x1[None, :]
+            x1sum  += x1[:, None]
+            perfect_loglik += perfect_loglik_t
+            aici_bias_cr   += aici_bias_cr_t
+            loglik         += loglik_t
 
-                if has_input:
-                    xi  += xi_t
-                    xi1 += xi1_t
-                    psi += psi_t
-
-        # Aggregate ASOS outputs if needed
-        if asos_flag:
-            # (mirroring the MATLAB sum-of-struct-field logic)
-            out_list = [out_ex]   # placeholder — real impl collects across ex loop
-            gamma  = sum(o.gamma  for o in out_list)
-            gamma1 = sum(o.gamma1 for o in out_list)
-            gamma2 = sum(o.gamma2 for o in out_list)
-            delta  = sum(o.delta  for o in out_list)
-            beta   = sum(o.beta   for o in out_list)
-            x1sum  = sum(o.x1sum  for o in out_list)
-            P1sum  = sum(o.P1sum  for o in out_list)
-            klim_vals = [o.klim for o in out_list]
-            nonzero   = [k for k in klim_vals if k != 0]
-            params.klim = float(np.mean(nonzero)) if nonzero else 0.0
             if has_input:
-                xi  = sum(o.xi  for o in out_list)
-                xi1 = sum(o.xi1 for o in out_list)
-                psi = sum(o.psi for o in out_list)
-        else:
-            LLp.append(perfect_loglik)
-            aici.append(aici_bias_cr)
+                xi  += xi_t
+                xi1 += xi1_t
+                psi += psi_t
 
         LL.append(loglik)
+        LLp.append(perfect_loglik)
+        aici.append(aici_bias_cr)
         if verbose:
             print(f"iteration {num_iter}, loglik = {loglik:.6f}")
         num_iter += 1
