@@ -25,6 +25,9 @@ qp = ["quadprog"]
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore::sklearn.exceptions.ConvergenceWarning",
+    # joblib's numpy_pickle.py does `array.shape = ...` instead of .reshape() on
+    # load; unfixed upstream bug (joblib/joblib#1772), triggers on numpy>=2.5.
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
 ]
 
 [tool.setuptools.packages.find]
