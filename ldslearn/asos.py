@@ -163,23 +163,57 @@ def ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize):
     @ApproxEStep/ApproxEStep.m), once per sequence, ahead of the per-iteration
     `Step()` calls that consume the returned Struct.
 
-    Ports the brute-force fallback formula that the MATLAB source leaves
-    commented out as an FFT-equivalent but slower alternative, rather than
-    the FFT path — same output, without the negative-lag index-reversal
-    translation risk the FFT path introduces.
+    Computes the lag-indexed correlation sums via the FFT path: the interior
+    slice of each channel is zero-padded and transformed once, then every
+    pairwise correlation is a single FFT multiply-conjugate-inverse instead
+    of an O(T) time-domain accumulation.
     """
     T = y_.shape[1]
     total = klim + 2
+    N = T - 2 * edgesize
     y_y_ = np.zeros((outsize, outsize, total))
     u_u_ = np.zeros((insize, insize, total))
     u_y_ = np.zeros((insize, outsize, total))
     y_u_ = np.zeros((outsize, insize, total))
-    for k in range(total):
-        for t in range(edgesize, T - k - edgesize):
-            y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
-            u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
-            u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
-            y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
+
+    # Zero-pad the interior slice (transposed so time runs down rows) with
+    # klim+1 rows of zeros — this turns circular FFT correlation into the
+    # linear correlation needed for lags 0..klim+1 — then FFT each channel.
+    fy = np.vstack([y_[:, edgesize:T - edgesize].T, np.zeros((klim + 1, outsize))])
+    fu = np.vstack([u_[:, edgesize:T - edgesize].T, np.zeros((klim + 1, insize))])
+    fy = np.fft.fft(fy, axis=0)
+    fu = np.fft.fft(fu, axis=0)
+
+    for i in range(outsize):
+        for j in range(outsize):
+            icy = np.fft.ifft(np.conj(fy[:, i]) * fy[:, j])
+            y_y_[j, i, :] = icy[:total].real
+
+    for i in range(insize):
+        for j in range(insize):
+            icu = np.fft.ifft(np.conj(fu[:, i]) * fu[:, j])
+            u_u_[j, i, :] = icu[:total].real
+
+    for i in range(insize):
+        for j in range(outsize):
+            icuy = np.fft.ifft(fu[:, i] * np.conj(fy[:, j]))
+            u_y_[i, j, :] = icuy[:total].real
+            # Negative lags for y_u_ come from the tail of the same
+            # transform, in reverse order (lag 0 filled below by symmetry).
+            y_u_[j, i, 1:] = icuy[N:N + klim + 1][::-1].real
+
+    # Lag-0 entry of y_u_ is transpose-symmetric with u_y_'s lag-0 entry,
+    # not pulled from the FFT.
+    y_u_[:, :, 0] = u_y_[:, :, 0].T
+
+    # Equivalent brute-force reference (kept for documentation, mirrors the
+    # commented-out fallback in the original source):
+    # for k in range(total):
+    #     for t in range(edgesize, T - k - edgesize):
+    #         y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
+    #         u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
+    #         u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
+    #         y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
 
     return Struct(
         klim=klim, klag=klag, edgesize=edgesize, T=T,

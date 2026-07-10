@@ -302,6 +302,45 @@ def test_approxestep_output_shapes():
         assert getattr(o, field).shape == (rows, klag)
 
 
+def _bruteforce_lag_correlations(y_, u_, klim, edgesize, insize, outsize):
+    """Independent, naive oracle for the lag-indexed correlation sums —
+    recomputes them via direct time-domain accumulation rather than FFT, so
+    it can verify ApproxEStep's FFT path against a formula it does not share
+    any code with."""
+    T = y_.shape[1]
+    total = klim + 2
+    y_y_ = np.zeros((outsize, outsize, total))
+    u_u_ = np.zeros((insize, insize, total))
+    u_y_ = np.zeros((insize, outsize, total))
+    y_u_ = np.zeros((outsize, insize, total))
+    for k in range(total):
+        for t in range(edgesize, T - k - edgesize):
+            y_y_[:, :, k] += y_[:, [t + k]] @ y_[:, [t]].T
+            u_u_[:, :, k] += u_[:, [t + k]] @ u_[:, [t]].T
+            u_y_[:, :, k] += u_[:, [t + k]] @ y_[:, [t]].T
+            y_u_[:, :, k] += y_[:, [t + k]] @ u_[:, [t]].T
+    return y_y_, u_u_, u_y_, y_u_
+
+
+def test_approxestep_fft_matches_bruteforce():
+    insize, outsize = 2, 2
+    klim, edgesize, T = 2, 2, 12
+    klag = 2 * klim + 1
+    rng = np.random.default_rng(42)
+    y_ = rng.standard_normal((outsize, T))
+    u_ = rng.standard_normal((insize, T))
+
+    o = ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize)
+    ref_y_y_, ref_u_u_, ref_u_y_, ref_y_u_ = _bruteforce_lag_correlations(
+        y_, u_, klim, edgesize, insize, outsize
+    )
+
+    assert np.allclose(o.y_y_, ref_y_y_)
+    assert np.allclose(o.u_u_, ref_u_u_)
+    assert np.allclose(o.u_y_, ref_u_y_)
+    assert np.allclose(o.y_u_, ref_y_u_)
+
+
 def test_step_output_shapes_and_finite_LL_err():
     o, params = _synthetic_step_inputs(seed=10, insize=1)
     A, B, C, D, Q, R, insize, outsize, hidsize, pi_1, V_1 = pextract(params)
