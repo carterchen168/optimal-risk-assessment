@@ -61,7 +61,7 @@ def test_kalman_smoother_shapes_no_input():
     ss, os_, T = 3, 2, 40
     y, A, C, Q, R, initx, initV = _simulate_lds(ss, os_, T, seed=1)
 
-    xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr = kalman_smoother(
+    xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr, perror = kalman_smoother(
         y, A, C, Q, R, initx, initV
     )
 
@@ -72,6 +72,8 @@ def test_kalman_smoother_shapes_no_input():
     assert isinstance(loglik, float)
     assert perfect_loglik == 0.0
     assert aici_bias_cr == 0.0
+    assert np.isfinite(perror)
+    assert perror >= 0.0
 
 
 def test_kalman_smoother_shapes_with_input():
@@ -82,7 +84,7 @@ def test_kalman_smoother_shapes_with_input():
     D = rng.standard_normal((os_, is_)) * 0.1
     u = rng.standard_normal((is_, T))
 
-    xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr = kalman_smoother(
+    xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr, perror = kalman_smoother(
         y, A, C, Q, R, initx, initV, B=B, D=D, u=u
     )
 
@@ -92,13 +94,15 @@ def test_kalman_smoother_shapes_with_input():
     assert np.isfinite(loglik)
     assert perfect_loglik == 0.0
     assert aici_bias_cr == 0.0
+    assert np.isfinite(perror)
+    assert perror >= 0.0
 
 
 def test_smoothed_covariances_are_symmetric_psd():
     ss, os_, T = 3, 2, 40
     y, A, C, Q, R, initx, initV = _simulate_lds(ss, os_, T, seed=3)
 
-    _, Vsmooth, _, _, _, _ = kalman_smoother(y, A, C, Q, R, initx, initV)
+    _, Vsmooth, _, _, _, _, _ = kalman_smoother(y, A, C, Q, R, initx, initV)
 
     for t in range(T):
         V = Vsmooth[:, :, t]
@@ -121,8 +125,8 @@ def test_loglik_direction_across_noise_levels():
         ss, os_, T, seed=42, r_scale=1.0
     )
 
-    _, _, _, loglik_low, _, _ = kalman_smoother(y_low, A, C, Q, R_low, initx, initV)
-    _, _, _, loglik_high, _, _ = kalman_smoother(y_high, A, C, Q, R_high, initx, initV)
+    _, _, _, loglik_low, _, _, _ = kalman_smoother(y_low, A, C, Q, R_low, initx, initV)
+    _, _, _, loglik_high, _, _, _ = kalman_smoother(y_high, A, C, Q, R_high, initx, initV)
 
     assert loglik_low > loglik_high
 
@@ -146,7 +150,9 @@ def test_exact_estep_noinput_shapes_and_invariants():
     assert expt.Ex_.shape == (ss, T)
     assert expt.Exx_.end.shape == (ss, ss)
     assert expt.Exx_.start.shape == (ss, ss)
-    assert err is None
+    assert isinstance(err, float)
+    assert np.isfinite(err)
+    assert err >= 0.0
     assert np.isfinite(loglik_t)
 
     _assert_symmetric_psd(expt.Ex_x_0)
@@ -159,13 +165,14 @@ def test_exact_estep_noinput_matches_kalman_smoother():
     y, A, C, Q, R, initx, initV = _simulate_lds(ss, os_, T, seed=5)
     ps = pstruct_noinput(A, C, Q, R, initx, initV)
 
-    xsmooth, Vsmooth, VVsmooth, loglik, _, _ = kalman_smoother(
+    xsmooth, Vsmooth, VVsmooth, loglik, _, _, perror = kalman_smoother(
         y, A, C, Q, R, initx, initV
     )
-    expt, loglik_t, _ = ExactEstep_noinput(y, ps)
+    expt, loglik_t, err = ExactEstep_noinput(y, ps)
 
     assert np.allclose(expt.Ex_, xsmooth)
     assert np.isclose(loglik_t, loglik)
+    assert np.isclose(err, perror)
 
     end_expected = xsmooth[:, -1:] @ xsmooth[:, -1:].T + Vsmooth[:, :, -1]
     start_expected = xsmooth[:, :1] @ xsmooth[:, :1].T + Vsmooth[:, :, 0]
@@ -184,6 +191,40 @@ def test_exact_estep_noinput_matches_kalman_smoother():
     assert np.allclose(expt.Ex_x_0, gamma)
     assert np.allclose(expt.Ey_x_0, delta)
     assert np.allclose(expt.Ex_x_1, beta)
+
+
+def test_exact_estep_noinput_perror_matches_manual_forward_pass():
+    # Independent re-derivation of ASOS's ExactEstep.m accumulation:
+    #   perror = perror + y_inov'*y_inov
+    # using a standalone forward-only Kalman pass (not kalman_smoother/filterpy),
+    # so this doesn't just assert "whatever the implementation computes".
+    ss, os_, T = 3, 2, 40
+    y, A, C, Q, R, initx, initV = _simulate_lds(ss, os_, T, seed=5)
+    ps = pstruct_noinput(A, C, Q, R, initx, initV)
+
+    expt, loglik_t, err = ExactEstep_noinput(y, ps)
+
+    x1 = initx.copy()
+    V1 = initV.copy()
+    x0_prev = None
+    V0_prev = None
+    perror_expected = 0.0
+    for t in range(T):
+        if t > 0:
+            x1 = A @ x0_prev
+            V1 = A @ V0_prev @ A.T + Q
+        S = C @ V1 @ C.T + R
+        invS = np.linalg.inv(S)
+        y_inov = y[:, t] - C @ x1
+        perror_expected += float(y_inov.T @ y_inov)
+        K = V1 @ C.T @ invS
+        x0_prev = x1 + K @ y_inov
+        V0_prev = V1 - K @ C @ V1
+
+    assert isinstance(err, float)
+    assert np.isfinite(err)
+    assert err >= 0.0
+    assert np.isclose(err, perror_expected)
 
 
 def test_exact_estep_with_input_shapes_and_invariants():
@@ -205,7 +246,9 @@ def test_exact_estep_with_input_shapes_and_invariants():
     assert expt.Exx_.start.shape == (ss, ss)
     assert expt.Eu_x_0.shape == (is_, ss)
     assert expt.Ex_u_1.shape == (ss, is_)
-    assert err is None
+    assert isinstance(err, float)
+    assert np.isfinite(err)
+    assert err >= 0.0
     assert np.isfinite(loglik_t)
 
     _assert_symmetric_psd(expt.Ex_x_0)
@@ -222,13 +265,14 @@ def test_exact_estep_with_input_matches_kalman_smoother():
     u = rng.standard_normal((is_, T))
     ps = pstruct(A, B, C, D, Q, R, initx, initV)
 
-    xsmooth, Vsmooth, VVsmooth, loglik, _, _ = kalman_smoother(
+    xsmooth, Vsmooth, VVsmooth, loglik, _, _, perror = kalman_smoother(
         y, A, C, Q, R, initx, initV, B=B, D=D, u=u
     )
-    expt, loglik_t, _ = ExactEstep(y, u, ps)
+    expt, loglik_t, err = ExactEstep(y, u, ps)
 
     assert np.allclose(expt.Ex_, xsmooth)
     assert np.isclose(loglik_t, loglik)
+    assert np.isclose(err, perror)
 
     end_expected = xsmooth[:, -1:] @ xsmooth[:, -1:].T + Vsmooth[:, :, -1]
     start_expected = xsmooth[:, :1] @ xsmooth[:, :1].T + Vsmooth[:, :, 0]
@@ -324,7 +368,7 @@ def test_estep_ar_mode_bypasses_kalman_smoother():
     y = rng.standard_normal((ss, T))
 
     (beta, gamma, delta, gamma1, gamma2,
-     x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr) = _estep(
+     x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr, perror) = _estep(
         y, A, C, Q, R, initx, initV, ar_mode=True
     )
 
@@ -334,6 +378,7 @@ def test_estep_ar_mode_bypasses_kalman_smoother():
     assert loglik == 0.0
     assert perfect_loglik == 0.0
     assert aici_bias_cr == 0.0
+    assert perror == 0.0
 
     gamma_expected = np.zeros((ss, ss))
     beta_expected = np.zeros((ss, ss))
@@ -365,7 +410,7 @@ def test_estep_input_ar_mode_bypasses_kalman_smoother():
     u = rng.standard_normal((is_, T))
 
     (beta, gamma, delta, gamma1, gamma2, xi, psi,
-     x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr) = _estep_input(
+     x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr, perror) = _estep_input(
         y, u, A, B, C, D, Q, R, initx, initV, ar_mode=True
     )
 
@@ -375,6 +420,7 @@ def test_estep_input_ar_mode_bypasses_kalman_smoother():
     assert loglik == 0.0
     assert perfect_loglik == 0.0
     assert aici_bias_cr == 0.0
+    assert perror == 0.0
 
     gamma_expected = np.zeros((ss, ss))
     beta_expected = np.zeros((ss, ss))

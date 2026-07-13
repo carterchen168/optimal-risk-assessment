@@ -79,6 +79,8 @@ def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
     loglik        : float
     perfect_loglik: float  — placeholder (0.0); TODO: ACCEPT AICS support
     aici_bias_cr  : float  — placeholder (0.0); TODO: ACCEPT AICS support
+    perror        : float  — Σ_t y_inov_t' y_inov_t, pre-update innovation
+                              sum-of-squares (mirrors ASOS ExactEstep.m's perror)
     """
     B = kwargs.get('B', None)
     D = kwargs.get('D', None)
@@ -114,6 +116,7 @@ def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
     K_filt_hist  = np.zeros((T, ss, os))  # filter gains for Shumway-Stoffer terminal anchor
     x_prior_hist = np.zeros((T, ss))   # predicted mean before each update
     loglik = 0.0
+    perror = 0.0
 
     for t in range(T):
         if t > 0:
@@ -128,6 +131,7 @@ def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
             z = z - D @ u[:, t]        # D feedthrough absorbed into observation
         kf.update(z.reshape(-1, 1))
         loglik += kf.log_likelihood    # log p(z_t | predicted prior)
+        perror += float((kf.y.T @ kf.y).item())  # kf.y = pre-update innovation
 
         x_filt_hist[t] = kf.x.ravel()
         P_filt_hist[t] = kf.P.copy()
@@ -169,7 +173,7 @@ def kalman_smoother(y, A, C, Q, R, initx, initV, **kwargs):
                 + Ks[k] @ (VVsmooth[:, :, k + 1] - A @ P_filt_hist[k]) @ Ks[k - 1].T
             )
 
-    return xsmooth, Vsmooth, VVsmooth, loglik, 0.0, 0.0
+    return xsmooth, Vsmooth, VVsmooth, loglik, 0.0, 0.0, perror
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +202,11 @@ def ExactEstep_noinput(y, pstruct_obj):
                  .Ex_     (ss, T)   — smoothed state sequence
                  .Exx_    Struct(.end, .start)  — endpoint outer products
     loglik_t : float
-    err      : None
+    err      : float — perror, Σ_t y_inov_t' y_inov_t (see kalman_smoother)
     """
     ps = pstruct_obj
     (beta, gamma, delta, gamma1, gamma2,
-     x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t) = _estep(
+     x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t, perror_t) = _estep(
         y, ps.A, ps.C, ps.Q, ps.R,
         ps.initx[:, None], ps.initV, ar_mode=False
     )
@@ -217,7 +221,7 @@ def ExactEstep_noinput(y, pstruct_obj):
             start = gamma - gamma2            # Σ x_0 x_0' + V_0  (start outer product)
         )
     )
-    return expt, loglik_t, None
+    return expt, loglik_t, perror_t
 
 
 def ExactEstep(y, u, pstruct_obj):
@@ -236,11 +240,11 @@ def ExactEstep(y, u, pstruct_obj):
                  .Eu_x_0  (is, ss) — Σ_{t=0}^{T-2} u_t x_t'
                  .Ex_u_1  (ss, is) — Σ_{t=1}^{T-1} x_t u_{t-1}' (transposed psi)
     loglik_t : float
-    err      : None
+    err      : float — perror, Σ_t y_inov_t' y_inov_t (see kalman_smoother)
     """
     ps = pstruct_obj
     (beta, gamma, delta, gamma1, gamma2,
-     xi, psi, x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t) = _estep_input(
+     xi, psi, x1, V1, xsmooth, loglik_t, perfect_loglik_t, aici_t, perror_t) = _estep_input(
         y, u, ps.A, ps.B, ps.C, ps.D, ps.Q, ps.R,
         ps.initx[:, None], ps.initV, ar_mode=False
     )
@@ -257,7 +261,7 @@ def ExactEstep(y, u, pstruct_obj):
         Eu_x_0 = xi,        # (is, ss)
         Ex_u_1 = psi.T      # (ss, is) — note the transpose matches MATLAB convention
     )
-    return expt, loglik_t, None
+    return expt, loglik_t, perror_t
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +291,7 @@ def _estep(y, A, C, Q, R, initx, initV, ar_mode):
     beta, gamma, delta, gamma1, gamma2 : np.ndarray
     x1     : np.ndarray (ss,)
     V1     : np.ndarray (ss, ss)
-    loglik, perfect_loglik, aici_bias_cr : float
+    loglik, perfect_loglik, aici_bias_cr, perror : float
     """
     os, T = y.shape
     ss    = A.shape[0]
@@ -299,8 +303,9 @@ def _estep(y, A, C, Q, R, initx, initV, ar_mode):
         loglik     = 0.0
         perfect_loglik  = 0.0
         aici_bias_cr    = 0.0
+        perror          = 0.0
     else:
-        xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr = \
+        xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr, perror = \
             kalman_smoother(y, A, C, Q, R, initx, initV)
 
     delta  = np.zeros((os, ss))
@@ -319,7 +324,7 @@ def _estep(y, A, C, Q, R, initx, initV, ar_mode):
     x1 = xsmooth[:, 0]
     V1 = Vsmooth[:, :, 0]
 
-    return beta, gamma, delta, gamma1, gamma2, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr
+    return beta, gamma, delta, gamma1, gamma2, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr, perror
 
 
 def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
@@ -342,7 +347,7 @@ def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
     xi, psi : np.ndarray  — input cross-covariance sufficient statistics
     x1 : np.ndarray (ss,)
     V1 : np.ndarray (ss, ss)
-    loglik, perfect_loglik, aici_bias_cr : float
+    loglik, perfect_loglik, aici_bias_cr, perror : float
     """
     os, T = y.shape
     ss    = A.shape[0]
@@ -355,8 +360,9 @@ def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
         loglik   = 0.0
         perfect_loglik = 0.0
         aici_bias_cr   = 0.0
+        perror         = 0.0
     else:
-        xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr = \
+        xsmooth, Vsmooth, VVsmooth, loglik, perfect_loglik, aici_bias_cr, perror = \
             kalman_smoother(y, A, C, Q, R, initx, initV, B=B, D=D, u=u)
 
     delta = np.zeros((os, ss))
@@ -380,7 +386,7 @@ def _estep_input(y, u, A, B, C, D, Q, R, initx, initV, ar_mode):
     x1 = xsmooth[:, 0]
     V1 = Vsmooth[:, :, 0]
 
-    return beta, gamma, delta, gamma1, gamma2, xi, psi, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr
+    return beta, gamma, delta, gamma1, gamma2, xi, psi, x1, V1, xsmooth, loglik, perfect_loglik, aici_bias_cr, perror
 
 
 # ---------------------------------------------------------------------------
