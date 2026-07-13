@@ -300,6 +300,8 @@ def test_approxestep_output_shapes():
     for field in ("y_pre_", "u_pre_", "y_post_", "u_post_"):
         rows = outsize if field[0] == "y" else insize
         assert getattr(o, field).shape == (rows, klag)
+    assert np.array_equal(o.y_, y_)
+    assert np.array_equal(o.u_, u_)
 
 
 def _bruteforce_lag_correlations(y_, u_, klim, edgesize, insize, outsize):

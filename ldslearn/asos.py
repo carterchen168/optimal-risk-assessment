@@ -224,6 +224,7 @@ def ApproxEStep(y_, u_, klim, klag, edgesize, insize, outsize):
         u_pre_=u_[:, edgesize:edgesize + klag],
         y_post_=y_[:, T - klag - edgesize:T - edgesize],
         u_post_=u_[:, T - klag - edgesize:T - edgesize],
+        y_=y_, u_=u_,
     )
 
 
