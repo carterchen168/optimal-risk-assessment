@@ -12,7 +12,7 @@ from scipy.linalg import (
 
 from guess import guess
 from ldsparamsidx import lds_params_idx
-from learn_kalman import learn_kalman
+from learn_kalman import learn_kalman, ASOS_EDGESIZE
 from inverse_covariance_selection import inverse_covariance_selection
 
 
@@ -310,6 +310,21 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool, asosfl
         verbose   = False
         asos_flag = asosflag if asosflag is not None else getattr(params, 'asos', False)
 
+        if asos_flag:
+            klim = getattr(params, 'klim', None)
+            if klim is None:
+                raise ValueError(
+                    "lds_timeseries: asosflag/params.asos is True but params.klim is not set"
+                )
+            T_seg = y_seg.shape[1]
+            min_T = 2 * ASOS_EDGESIZE + klim + 1
+            if T_seg <= min_T:
+                raise ValueError(
+                    f"lds_timeseries: selected segment (T={T_seg}) is too short for ASOS "
+                    f"(requires T > 2*edgesize + klim + 1 = {min_T}, "
+                    f"edgesize={ASOS_EDGESIZE}, klim={klim})"
+                )
+
         t_start = time.process_time()
 
         # Mirror MATLAB: cd to ASOS dir when not distributed
@@ -351,7 +366,13 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool, asosfl
         if not _is_pos_def(params.learned.qwd[:, :, -1]):
             if verbose:
                 print("Finding a positive definite Q")
-            posdef_Q = inverse_covariance_selection(params.learned.qwd[:, :, -1], 0)
+            try:
+                posdef_Q = inverse_covariance_selection(params.learned.qwd[:, :, -1], 0)
+            except (ValueError, Exception):
+                # Fallback: regularise with smallest eigenvalue nudge
+                S_q = params.learned.qwd[:, :, -1]
+                min_ev = float(np.min(np.linalg.eigvalsh(S_q)))
+                posdef_Q = S_q + (np.abs(min_ev) + 1e-6) * np.eye(S_q.shape[0])
             params.learned.qwd = np.concatenate(
                 [params.learned.qwd, posdef_Q[:, :, np.newaxis]], axis=2
             )

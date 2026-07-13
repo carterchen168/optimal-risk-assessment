@@ -4,6 +4,9 @@ from filterpy.kalman import rts_smoother as fp_rts_smoother
 from em_converged import em_converged
 from asos import ApproxEStep, Step, Step_out, pstruct as _asos_pstruct
 
+# ASOS ApproxEStep's fixed edge-buffer size (matches the ASOS Toolbox default).
+ASOS_EDGESIZE = 25
+
 
 # ---------------------------------------------------------------------------
 # Lightweight Struct (mirrors MATLAB dot-notation structs)
@@ -523,7 +526,7 @@ def learn_kalman(
         if asos_flag:
             u_asos = u if has_input else np.zeros((0, T))
             new_params_asos.append(
-                ApproxEStep(y, u_asos, params.klim, 2 * params.klim + 1, 25, is_, os)
+                ApproxEStep(y, u_asos, params.klim, 2 * params.klim + 1, ASOS_EDGESIZE, is_, os)
             )
 
     # ------------------------------------------------------------------

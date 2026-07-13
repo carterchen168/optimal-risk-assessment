@@ -177,3 +177,59 @@ def test_lds_timeseries_asosflag_defaults_from_params_asos(set_params_asos, expe
         lds_timeseries(params, ss, [y], [u], True)  # asosflag left at default (None)
 
     assert spy_asos.called is expect_asos
+
+
+def test_lds_timeseries_asosflag_missing_klim_raises():
+    # #019: params.klim is unconditionally read deep inside learn_kalman.py's
+    # asos_flag branch — lds_timeseries() must raise a clear error at its own
+    # boundary instead of letting the caller hit an AttributeError later.
+    ss, os_, is_, T = 2, 3, 2, 150
+    y, u = _simulate_lds_with_input(ss, os_, is_, T, seed=210)
+
+    params = SimpleNamespace(inittype=1, distrib=1)  # no params.klim set
+
+    with pytest.raises(ValueError, match="klim"):
+        lds_timeseries(params, ss, [y], [u], True, True)
+
+
+def test_lds_timeseries_asosflag_segment_too_short_raises():
+    # #019: the segment-selection loop's own too_short check is tied to nmax
+    # and has nothing to do with ASOS's T > 2*edgesize + klim + 1 requirement
+    # (edgesize=25 hardcoded). T=50 with klim=2 (threshold 53) passes the
+    # nmax-based selection loop (nmax=ss=2, os_=3, is_=2 -> that check only
+    # rejects ny < 47) but must still be rejected by the new ASOS-specific
+    # check before reaching ApproxEStep(), where it would otherwise silently
+    # wrap via a negative-index slice instead of raising.
+    ss, os_, is_, T = 2, 3, 2, 50
+    y, u = _simulate_lds_with_input(ss, os_, is_, T, seed=220)
+
+    params = SimpleNamespace(inittype=1, distrib=1)
+    params.klim = 2
+
+    with pytest.raises(ValueError, match="too short"):
+        lds_timeseries(params, ss, [y], [u], True, True)
+
+
+def test_lds_timeseries_q_fallback_survives_solver_failure():
+    # #019: the Q positive-definiteness fallback previously had no try/except
+    # around inverse_covariance_selection, unlike the structurally identical
+    # P0 (xssd) fallback a few lines below it. Force the Q check to fail and
+    # the solver to raise, and confirm lds_timeseries() still returns a
+    # symmetric positive-definite qwdl via the eigenvalue-nudge fallback.
+    ss, os_, is_, T = 2, 3, 2, 150
+    y, u = _simulate_lds_with_input(ss, os_, is_, T, seed=230)
+
+    params = SimpleNamespace(inittype=1, distrib=1)
+
+    def raise_solver_error(*args, **kwargs):
+        raise ValueError("forced solver failure")
+
+    # _is_pos_def is called exactly 3 times in the learn_flag branch, in
+    # order: Q, R, xssd (P0). Force only the Q check to fail.
+    with patch.object(_lk_mod, "em_converged", return_value=(True, False)), \
+         patch.object(_mod, "_is_pos_def", side_effect=[False, True, True]), \
+         patch.object(_mod, "inverse_covariance_selection", side_effect=raise_solver_error):
+        result = lds_timeseries(params, ss, [y], [u], True, False)
+
+    # Must not raise: qwdl is symmetric positive definite via the fallback.
+    np.linalg.cholesky(result.qwdl)
