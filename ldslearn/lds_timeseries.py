@@ -117,7 +117,7 @@ def _null(M: np.ndarray) -> np.ndarray:
 # Main function
 # ---------------------------------------------------------------------------
 
-def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
+def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool, asosflag: bool = None):
     """
     Initialise and (optionally) learn an LDS model from multi-segment data.
 
@@ -136,6 +136,11 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
         Input (control) sequences aligned with y. Pass [] or None if absent.
     learn_flag : bool
         If True, run EM Kalman learning; otherwise use initialisation only.
+    asosflag   : bool or None
+        If True (and learn_flag is True), use the approximate ASOS E-step
+        during EM learning instead of the exact E-step. If None (default),
+        falls back to `params.asos` (the flag aux_input.py's user-config
+        prompt sets), or False if `params.asos` is also absent.
 
     Returns
     -------
@@ -271,6 +276,13 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
     if params.inittype == 2:
         params.init.s = S
         params.init.N = np.block([[Q, S], [S.T, R]])
+    else:
+        # Linear-regression init never computes a Q/R cross-covariance (S),
+        # so there's no combined noise covariance to report here — matches
+        # the MATLAB original, which also leaves this field unset for
+        # inittype==1 (params.nd's unconditional read at the end of this
+        # function is a latent bug in the MATLAB source for that branch).
+        params.init.N = None
 
     # ------------------------------------------------------------------
     # 5. Steady-state covariance and initial state
@@ -296,7 +308,7 @@ def lds_timeseries(params, nmax: int, y: list, u: list, learn_flag: bool):
         diag_r    = False
         ar_mode   = False
         verbose   = False
-        asos_flag = False
+        asos_flag = asosflag if asosflag is not None else getattr(params, 'asos', False)
 
         t_start = time.process_time()
 

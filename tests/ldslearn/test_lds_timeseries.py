@@ -4,11 +4,12 @@ tests/ldslearn/test_lds_timeseries.py
 Pytest suite for ldslearn/lds_timeseries.py.
 """
 
+import contextlib
 import importlib.util
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -27,6 +28,14 @@ _spec.loader.exec_module(_mod)
 
 lds_timeseries = _mod.lds_timeseries
 learn_lds = _mod.learn_lds
+
+# lds_timeseries.py's own `from learn_kalman import learn_kalman` (a bare
+# import, resolved via the sys.path.insert above) populates sys.modules
+# under the plain name "learn_kalman" as a side effect of exec_module above
+# — reuse that exact module object (not a second independent load) so that
+# patching em_converged on it actually affects the learn_kalman() call
+# lds_timeseries() makes internally.
+_lk_mod = sys.modules['learn_kalman']
 
 
 def test_learn_kalman_call_site_signature_and_unpacking():
@@ -69,3 +78,102 @@ def test_learn_kalman_call_site_signature_and_unpacking():
     learned, ll, llp, aici = result
     assert len(aici) == len(ll)
     assert len(llp) == len(ll)
+
+
+def _simulate_lds_with_input(ss, os_, is_, T, seed):
+    """Simulate a small stable input-driven LDS, returning (y, u) as (channels, T) arrays."""
+    rng = np.random.default_rng(seed)
+    A = np.diag(rng.uniform(0.3, 0.7, size=ss))
+    B = rng.standard_normal((ss, is_)) * 0.1
+    C = rng.standard_normal((os_, ss))
+    D = rng.standard_normal((os_, is_)) * 0.1
+    Q = np.eye(ss) * 0.05
+    R = np.eye(os_) * 0.05
+
+    u = rng.standard_normal((is_, T))
+    x_prev = np.zeros(ss)
+    y = np.zeros((os_, T))
+    for t in range(T):
+        w = rng.multivariate_normal(np.zeros(ss), Q)
+        x_prev = A @ x_prev + B @ u[:, t] + w
+        v = rng.multivariate_normal(np.zeros(os_), R)
+        y[:, t] = C @ x_prev + D @ u[:, t] + v
+    return y, u
+
+
+@pytest.mark.parametrize("inittype,learn_flag,asosflag,seed", [
+    (1, False, False, 100),
+    (2, False, False, 101),
+    (1, True, False, 102),
+    (2, True, False, 103),
+    (1, True, True, 104),
+    (2, True, True, 105),
+])
+def test_lds_timeseries_full_matrix(inittype, learn_flag, asosflag, seed):
+    # Full matrix of #017's acceptance criteria: both inittype branches
+    # (1=linear regression, 2=N4SID), both learn_flag values, and
+    # asosflag=True (only meaningful combined with learn_flag=True, since
+    # asosflag only affects the internal EM loop). ss/os_/is_ mirror
+    # tests/ldslearn/test_learn_kalman.py's asosflag fixtures (edgesize=25
+    # hardcoded at the ASOS call site requires T > 2*edgesize+klim+1 = 53).
+    ss, os_, is_, T = 2, 3, 2, 150
+    y, u = _simulate_lds_with_input(ss, os_, is_, T, seed=seed)
+
+    params = SimpleNamespace(inittype=inittype, distrib=1)
+    if asosflag:
+        params.klim = 2
+
+    # lds_timeseries.py hardcodes max_iter=np.inf for the EM branch (MATLAB
+    # parity); force convergence after the first M-step so the test stays
+    # fast and deterministic regardless of asosflag's non-monotonic
+    # likelihood, same pattern as
+    # test_learn_kalman.py::test_learn_kalman_stops_early_when_converged.
+    em_ctx = (
+        patch.object(_lk_mod, "em_converged", return_value=(True, False))
+        if learn_flag else contextlib.nullcontext()
+    )
+    with em_ctx:
+        result = lds_timeseries(params, ss, [y], [u], learn_flag, asosflag)
+
+    assert result.adl.shape == (ss, ss)
+    assert result.cdl.shape == (os_, ss)
+    assert result.qwdl.shape == (ss, ss)
+    assert result.rvdl.shape == (os_, os_)
+    assert result.bdl.shape == (ss, is_)
+    assert result.ddl.shape == (os_, is_)
+
+    assert np.max(np.abs(np.linalg.eigvals(result.adl))) < 1
+
+    assert result.dare.shape == (ss, ss)
+    assert result.kfgain.shape == (ss, os_)
+    assert result.pssd.shape == (ss, ss)
+    assert np.all(np.isfinite(result.dare))
+    assert np.all(np.isfinite(result.kfgain))
+    assert np.all(np.isfinite(result.pssd))
+
+
+@pytest.mark.parametrize("set_params_asos,expect_asos", [
+    (True, True),
+    (False, False),
+])
+def test_lds_timeseries_asosflag_defaults_from_params_asos(set_params_asos, expect_asos):
+    # aux_input.py's user-config prompt sets params.asos (and params.klim)
+    # directly on the same params object testoptloop_ressarch.py's run()
+    # passes into lds_timeseries() — the real pipeline never passes an
+    # explicit asosflag argument, so lds_timeseries() must honor
+    # params.asos when asosflag is left at its default (None).
+    ss, os_, is_, T = 2, 3, 2, 150
+    y, u = _simulate_lds_with_input(ss, os_, is_, T, seed=200)
+
+    params = SimpleNamespace(inittype=1, distrib=1)
+    if set_params_asos:
+        params.asos = True
+        params.klim = 2
+    else:
+        params.asos = False
+
+    with patch.object(_lk_mod, "em_converged", return_value=(True, False)), \
+         patch.object(_lk_mod, "ApproxEStep", wraps=_lk_mod.ApproxEStep) as spy_asos:
+        lds_timeseries(params, ss, [y], [u], True)  # asosflag left at default (None)
+
+    assert spy_asos.called is expect_asos
